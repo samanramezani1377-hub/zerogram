@@ -4,9 +4,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.zerochat.network.lan.LanPeer
 import com.zerochat.network.lan.LanTransport
+import com.zerochat.network.transport.TransportRouter
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import timber.log.Timber
 import javax.inject.Inject
 
 data class DiscoveryUiState(
@@ -18,6 +20,7 @@ data class DiscoveryUiState(
 @HiltViewModel
 class DiscoveryViewModel @Inject constructor(
     private val lanTransport: LanTransport,
+    private val transportRouter: TransportRouter,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(DiscoveryUiState())
@@ -43,7 +46,10 @@ class DiscoveryViewModel @Inject constructor(
     fun connectToPeer(peer: LanPeer) {
         viewModelScope.launch {
             try {
-                lanTransport.connectDirect(peer.ipAddress, peer.port)
+                // Register the peer with TransportRouter so it knows about this connection
+                val fingerprint = peer.deviceId.ifBlank { peer.ipAddress }
+                transportRouter.connectLan(peer.ipAddress, peer.port, fingerprint)
+                Timber.i("Connected to peer $fingerprint via LAN")
             } catch (e: Exception) {
                 _uiState.update { it.copy(error = "Connection failed: ${e.message}") }
             }
@@ -53,12 +59,11 @@ class DiscoveryViewModel @Inject constructor(
     fun connectManually(peerIdOrIp: String) {
         viewModelScope.launch {
             try {
-                // Parse IP or Peer ID
                 if (peerIdOrIp.matches(Regex("\\d+\\.\\d+\\.\\d+\\.\\d+"))) {
-                    // It's an IP address
-                    lanTransport.connectDirect(peerIdOrIp, com.zerochat.data.model.Peer.DEFAULT_PORT)
+                    val port = com.zerochat.data.model.Peer.DEFAULT_PORT
+                    transportRouter.connectLan(peerIdOrIp, port, peerIdOrIp)
+                    Timber.i("Manual connection to $peerIdOrIp")
                 } else {
-                    // It's a Peer ID — resolve via mDNS or DHT (future)
                     _uiState.update { it.copy(error = "Peer ID resolution not yet implemented") }
                 }
             } catch (e: Exception) {
