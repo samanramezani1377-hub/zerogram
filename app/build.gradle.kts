@@ -43,10 +43,6 @@ android {
         jvmTarget = "17"
     }
 
-    composeOptions {
-        kotlinCompilerExtensionVersion = "2.0.0"
-    }
-
     buildFeatures {
         compose = true
         buildConfig = true
@@ -102,7 +98,7 @@ dependencies {
     // Coil (Image loading)
     implementation(libs.coil.compose)
 
-    // Stream WebRTC (Google WebRTC maintained fork for Android)
+    // Stream WebRTC (Google WebRTC maintained fork)
     implementation(libs.stream.webrtc.android)
 
     // mDNS for LAN peer discovery
