@@ -1,5 +1,7 @@
 package com.zerochat.ui.chat
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -13,12 +15,14 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.zerochat.data.model.Message
 import com.zerochat.data.model.MessageStatus
 import com.zerochat.data.model.TransportMode
+import com.zerochat.network.transport.TransportRouter
 import com.zerochat.ui.theme.SentMessageColor
 import com.zerochat.ui.theme.ReceivedMessageColor
 
@@ -33,6 +37,15 @@ fun ChatScreen(
     var messageText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
 
+    // File picker launcher for attachments
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        uri?.let {
+            viewModel.sendMedia(it.toString())
+        }
+    }
+
     LaunchedEffect(peerFingerprint) {
         viewModel.initialize(peerFingerprint)
     }
@@ -44,6 +57,7 @@ fun ChatScreen(
     }
 
     Scaffold(
+        modifier = Modifier.navigationBarsPadding(),
         topBar = {
             TopAppBar(
                 title = {
@@ -77,15 +91,17 @@ fun ChatScreen(
         bottomBar = {
             Surface(
                 shadowElevation = 8.dp,
+                modifier = Modifier.imePadding(),
             ) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(8.dp),
+                        .padding(horizontal = 8.dp, vertical = 8.dp)
+                        .imePadding(),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    IconButton(onClick = { /* Attach file */ }) {
-                        Icon(Icons.Default.AttachFile, contentDescription = "Attach")
+                    IconButton(onClick = { filePickerLauncher.launch("*/*") }) {
+                        Icon(Icons.Default.AttachFile, contentDescription = "Attach file")
                     }
 
                     OutlinedTextField(
