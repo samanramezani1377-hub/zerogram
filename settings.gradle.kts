@@ -1,20 +1,25 @@
 pluginManagement {
     repositories {
+        // Aliyun mirrors — have AGP 8.2.0 and work from Iran
+        maven { url = uri("https://maven.aliyun.com/repository/gradle-plugin") }
+        maven { url = uri("https://maven.aliyun.com/repository/google") }
+        maven { url = uri("https://maven.aliyun.com/repository/public") }
+        
+        // Standard repos as fallback
         google()
         mavenCentral()
         gradlePluginPortal()
-        
-        // Mirror for Google Maven (AGP, Compose, etc.)
-        // This is a known working mirror for Iran
-        maven {
-            url = uri("https://storage.googleapis.com/gradle-releases/")
-        }
     }
 }
 
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
+        // Aliyun mirrors
+        maven { url = uri("https://maven.aliyun.com/repository/google") }
+        maven { url = uri("https://maven.aliyun.com/repository/public") }
+        
+        // Standard repos
         google()
         mavenCentral()
         
