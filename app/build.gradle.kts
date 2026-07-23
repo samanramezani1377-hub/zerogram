@@ -41,15 +41,17 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    compilerOptions {
-        kotlinCompilerExtensionVersion = "2.0.0"
-        jvmTarget = JavaVersion.VERSION_17
-        warningsMode = org.getbrains.kotlin.gradle.dsl.WarningsMode.All
+    kotlinOptions {
+        jvmTarget = "17"
     }
 
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+
+    composeOptions {
+        kotlinCompilerExtensionVersion = "2.0.0"
     }
 
     packaging {
@@ -90,7 +92,7 @@ dependencies {
     ksp(libs.hilt.compiler)
     implementation(libs.hilt.navigation.compose)
 
-    // Room DBad
+    // Room DB
     implementation(libs.room.runtime)
     implementation(libs.room.ktx)
     ksp(libs.room.compiler)
@@ -102,7 +104,7 @@ dependencies {
     // Coil (Image loading)
     implementation(libs.coil.compose)
 
-    // Stream WebRTC (Google WebRTC maintained fork l for Android)
+    // Stream WebRTC (Google WebRTC maintained fork for Android)
     implementation(libs.stream.webrtc.android)
 
     // mDNS for LAN peer discovery
@@ -114,7 +116,7 @@ dependencies {
     // DataStore
     implementation(libs.datastore.preferences)
 
-    // Per-missions
+    // Permissions
     implementation(libs.accompanist.permissions)
 
     // Timber (Logging)
