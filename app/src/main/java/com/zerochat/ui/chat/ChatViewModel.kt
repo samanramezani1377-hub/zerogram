@@ -50,6 +50,17 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    fun sendMedia(uri: android.net.Uri) {
+        viewModelScope.launch {
+            try {
+                // TODO: Implement media sending
+                _uiState.update { it.copy(error = "Media sharing coming soon") }
+            } catch (e: Exception) {
+                _uiState.update { it.copy(error = "Failed to send media: ${e.message}") }
+            }
+        }
+    }
+
     private fun loadMessages() {
         viewModelScope.launch {
             messageRepository.getMessages(peerFingerprint).collect { messages ->
