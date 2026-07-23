@@ -1,7 +1,7 @@
 package com.zerochat.ui.chat
 
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.viewModelScope
+import android.lifecycle.ViewModel
+import android.lifecycle.viewModelScope
 import com.zerochat.crypto.CryptoEngine
 import com.zerochat.data.model.Message
 import com.zerochat.data.model.MessageStatus
@@ -12,6 +12,7 @@ import com.zerochat.domain.SessionManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import timber.log.Timber
 import javax.inject.Inject
 
 data class ChatUiState(
@@ -23,7 +24,7 @@ data class ChatUiState(
 )
 
 @HiltViewModel
-class ChatViewModel @Inject constructor(
+class ChatViewModel @inject constructor(
     private val sendMessageUseCase: SendMessageUseCase,
     private val messageRepository: MessageRepository,
     private val cryptoEngine: CryptoEngine,
@@ -41,13 +42,30 @@ class ChatViewModel @Inject constructor(
     }
 
     fun sendMessage(text: String) {
+        if (peerFingerprint.isBlank()) {
+            _uiState.update { it.copy(error = "No peer selected") }
+            return
+        }
 
         viewModelScope.launch {
             try {
                 val message = sendMessageUseCase(peerFingerprint, text)
-
+                Timber.d("Message sent: ${message.id}, status: ${message.status}")
             } catch (e: Exception) {
                 _uiState.update { it.copy(error = "Failed to send: ${e.message}") }
+            }
+        }
+    }
+
+    fun sendMedia(uriString: String) {
+        if (peerFingerprint.isBlank()) return
+        viewModelScope.launch {
+            try {
+                val fileName = uriString.substringAfterLast("/")
+                val message = sendMessageUseCase(peerFingerprint, "📎 Shared: $fileName")
+                Timber.d("Media sent: ${message.id}")
+            } catch (e: Exception) {
+                _uiState.update { it.copy(error = "Failed to send media: ${e.message}") }
             }
         }
     }
