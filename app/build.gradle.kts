@@ -1,6 +1,7 @@
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.hilt.android)
     alias(libs.plugins.ksp)
@@ -40,8 +41,10 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
+    compilerOptions {
+        kotlinCompilerExtensionVersion = "2.0.0"
+        jvmTarget = JavaVersion.VERSION_17
+        warningsMode = org.getbrains.kotlin.gradle.dsl.WarningsMode.All
     }
 
     buildFeatures {
@@ -49,13 +52,8 @@ android {
         buildConfig = true
     }
 
-    composeOptions {
-        kotlinCompilerExtensionVersion = libs.versions.kotlin
-    }
-
     packaging {
         resources {
-            // Exclude non-Android native libs from libsignal-client
             excludes += setOf(
                 "libsignal_jni*.dylib",
                 "signal_jni*.dll",
@@ -83,7 +81,6 @@ dependencies {
     // Lifecycle
     implementation(libs.lifecycle.runtime.compose)
     implementation(libs.lifecycle.viewmodel.compose)
-    implementation(libs.lifecycle.viewmodel.ktx)
 
     // Navigation
     implementation(libs.navigation.compose)
@@ -93,7 +90,7 @@ dependencies {
     ksp(libs.hilt.compiler)
     implementation(libs.hilt.navigation.compose)
 
-    // Room DB
+    // Room DBad
     implementation(libs.room.runtime)
     implementation(libs.room.ktx)
     ksp(libs.room.compiler)
@@ -105,7 +102,7 @@ dependencies {
     // Coil (Image loading)
     implementation(libs.coil.compose)
 
-    // Stream WebRTC (Google WebRTC maintained fork)
+    // Stream WebRTC (Google WebRTC maintained fork l for Android)
     implementation(libs.stream.webrtc.android)
 
     // mDNS for LAN peer discovery
@@ -117,7 +114,7 @@ dependencies {
     // DataStore
     implementation(libs.datastore.preferences)
 
-    // Permissions
+    // Per-missions
     implementation(libs.accompanist.permissions)
 
     // Timber (Logging)
