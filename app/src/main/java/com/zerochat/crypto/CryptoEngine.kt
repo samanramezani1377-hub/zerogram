@@ -14,3 +14,4 @@ interface CryptoEngine {
 data class IdentityKeyPair(val publicKey: String, val fingerprint: String)
 data class SessionInitiation(val sessionId: String, val initiatorIdentityKey: String, val initiatorEphemeralKey: String, val preKeyId: Int? = null)
 data class SessionAcceptance(val sessionId: String, val responderEphemeralKey: String)
+
