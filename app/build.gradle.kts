@@ -80,6 +80,7 @@ dependencies {
     // Lifecycle
     implementation(libs.lifecycle.runtime.compose)
     implementation(libs.lifecycle.viewmodel.compose)
+    implementation(libs.lifecycle.viewmodel.ktx)
 
     // Navigation
     implementation(libs.navigation.compose)
