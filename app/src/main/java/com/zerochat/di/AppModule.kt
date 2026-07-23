@@ -1,7 +1,7 @@
 package com.zerochat.di
 
 import android.content.Context
-import androidx.room.Room
+import android.room.Room
 import com.zerochat.crypto.CryptoEngine
 import com.zerochat.crypto.AesCryptoEngine
 import com.zerochat.data.local.ZeroChatDatabase
@@ -32,10 +32,6 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 object AppModule {
 
-    // ═══════════════════════════════════════════════════════════════
-    // Database
-    // ═══════════════════════════════════════════════════════════════
-
     @Provides
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): ZeroChatDatabase {
@@ -54,25 +50,14 @@ object AppModule {
     @Provides
     fun providePeerDao(db: ZeroChatDatabase): PeerDao = db.peerDao()
 
-    // ═══════════════════════════════════════════════════════════════
-    // Crypto
-    // ═══════════════════════════════════════════════════════════════
-
     @Provides
     @Singleton
     fun provideCryptoEngine(): CryptoEngine {
         return AesCryptoEngine()
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    // Network — LAN
-    // ═══════════════════════════════════════════════════════════════
-
-    @Provides
-    @Singleton
-    fun provideWifiDirectReceiver(@ApplicationContext context: Context): WifiDirectReceiver {
-        return WifiDirectReceiver(context)
-    }
+    // WifiDirectReceiver is @Singleton @Inject — Hilt auto-provides it.
+    // No explicit provider needed; Hilt resolves the @Inject constructor.
 
     @Provides
     @Singleton
@@ -83,19 +68,11 @@ object AppModule {
         return LanTransportImpl(context, wifiDirectReceiver)
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    // Network — WAN
-    // ═══════════════════════════════════════════════════════════════
-
     @Provides
     @Singleton
     fun provideWanTransport(@ApplicationContext context: Context): WanTransport {
         return WebRtcTransport(context)
     }
-
-    // ═══════════════════════════════════════════════════════════════
-    // Transport Router
-    // ═══════════════════════════════════════════════════════════════
 
     @Provides
     @Singleton
@@ -105,10 +82,6 @@ object AppModule {
     ): TransportRouter {
         return TransportRouterImpl(lanTransport, wanTransport)
     }
-
-    // ═══════════════════════════════════════════════════════════════
-    // Domain — Session & Use Cases
-    // ═══════════════════════════════════════════════════════════════
 
     @Provides
     @Singleton
@@ -137,10 +110,6 @@ object AppModule {
     ): IncomingMessageHandler {
         return IncomingMessageHandler(cryptoEngine, messageRepository, sessionManager, transportRouter)
     }
-
-    // ═══════════════════════════════════════════════════════════════
-    // Repositories
-    // ═══════════════════════════════════════════════════════════════
 
     @Provides
     @Singleton
