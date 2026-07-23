@@ -111,25 +111,54 @@ class TransportRouterImpl @Inject constructor(
     }
 
     override suspend fun send(peerFingerprint: String, encryptedPayload: ByteArray) {
-        val state = peerStates[peerFingerprint] ?: run {
-            Timber.w("No connection state for peer $peerFingerprint")
-            return
+        val state = peerStates.getOrPut(peerFingerprint) {
+            PeerConnectionState(fingerprint = peerFingerprint)
         }
 
         when (state.mode) {
             TransportMode.LAN -> {
-                lanTransport.sendData(encryptedPayload)
+                try {
+                    lanTransport.sendData(encryptedPayload)
+                    Timber.d("Sent via LAN to $peerFingerprint")
+                } catch (e: Exception) {
+                    Timber.w(e, "LAN send failed, trying WAN")
+                    state.mode = TransportMode.WAN
+                    wanTransport.sendData(encryptedPayload)
+                }
             }
             TransportMode.WAN -> {
-                wanTransport.sendData(encryptedPayload)
-            }
-            TransportMode.UNKNOWN -> {
-                // Try LAN first
-                if (lanTransport.connectionState().first() == LanConnectionState.CONNECTED) {
+                try {
+                    wanTransport.sendData(encryptedPayload)
+                    Timber.d("Sent via WAN to $peerFingerprint")
+                } catch (e: Exception) {
+                    Timber.w(e, "WAN send failed, trying LAN")
                     state.mode = TransportMode.LAN
                     lanTransport.sendData(encryptedPayload)
+                }
+            }
+            TransportMode.UNKNOWN -> {
+                // Auto-detect: try LAN first, fallback to WAN
+                val isLanConnected = lanTransport.connectionState().first() == LanConnectionState.CONNECTED
+                if (isLanConnected) {
+                    state.mode = TransportMode.LAN
+                    try {
+                        lanTransport.sendData(encryptedPayload)
+                        Timber.d("Auto-detected LAN for $peerFingerprint")
+                    } catch (e: Exception) {
+                        Timber.w(e, "Auto-LAN failed for $peerFingerprint")
+                        throw e
+                    }
                 } else {
-                    Timber.w("No transport available for peer $peerFingerprint")
+                    // Try WAN if LAN is not connected
+                    state.mode = TransportMode.WAN
+                    try {
+                        wanTransport.sendData(encryptedPayload)
+                        Timber.d("Auto-detected WAN for $peerFingerprint")
+                    } catch (e: Exception) {
+                        Timber.w(e, "Auto-WAN failed for $peerFingerprint")
+                        state.mode = TransportMode.UNKNOWN
+                        throw e
+                    }
                 }
             }
         }
