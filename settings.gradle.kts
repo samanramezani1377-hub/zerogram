@@ -12,7 +12,7 @@ dependencyResolutionManagement {
         google()
         mavenCentral()
         
-        // Signal's official Maven repo for libsignal-client
+        // Signal's official Maven repo
         maven {
             name = "SignalBuildArtifacts"
             url = uri("https://build-artifacts.signal.org/libraries/maven/")
