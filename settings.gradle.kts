@@ -1,23 +1,22 @@
 pluginManagement {
     repositories {
-        // Maven Central first — hosts AGP from 8.5.0+
+        google()
         mavenCentral()
         gradlePluginPortal()
         
-        // Shefferd mirror — replicates Google Maven, works from Iran
-        maven { url = uri("https://mirrors.shefferd.dev/google-maven/") }
-        
-        // Google as fallback
-        google()
+        // Mirror for Google Maven (AGP, Compose, etc.)
+        // This is a known working mirror for Iran
+        maven {
+            url = uri("https://storage.googleapis.com/gradle-releases/")
+        }
     }
 }
 
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
-        mavenCentral()
-        maven { url = uri("https://mirrors.shefferd.dev/google-maven/") }
         google()
+        mavenCentral()
         
         // Signal's official Maven repo
         maven {
