@@ -1,7 +1,7 @@
 package com.zerochat.di
 
 import android.content.Context
-import android.room.Room
+import androidx.room.Room
 import com.zerochat.crypto.CryptoEngine
 import com.zerochat.crypto.AesCryptoEngine
 import com.zerochat.data.local.ZeroChatDatabase
