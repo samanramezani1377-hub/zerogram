@@ -39,7 +39,7 @@ fun ChatScreen(
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
-        uri ? let {
+        uri?.let {
             viewModel.sendMedia(it)
         }
     }
