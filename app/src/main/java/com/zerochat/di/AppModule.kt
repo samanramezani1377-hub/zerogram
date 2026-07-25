@@ -76,7 +76,7 @@ object AppModule {
     ): ProfileImageUseCase = ProfileImageUseCase(processor, storage, repository)
 
     @Provides @Singleton
-    fun provideWifiDirectReceiver(): WifiDirectReceiver = WifiDirectReceiver()
+    fun provideWifiDirectReceiver(@ApplicationContext context: Context): WifiDirectReceiver = WifiDirectReceiver(context)
 
     @Provides @Singleton
     fun provideLanTransport(
