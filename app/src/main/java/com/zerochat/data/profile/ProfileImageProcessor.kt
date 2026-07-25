@@ -11,6 +11,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.io.ByteArrayOutputStream
+import java.io.ByteArrayInputStream
 import java.io.InputStream
 import java.security.MessageDigest
 import javax.inject.Inject
@@ -27,6 +28,10 @@ import javax.inject.Singleton
  * - Memory-safe progressive decoding
  *
  * All operations run on Dispatchers.IO.
+ *
+ * KEY FIX: Reads the entire URI stream into bytes ONCE, then decodes
+ * from memory. Photo Picker URIs on some Android versions can only be
+ * opened once — a second openInputStream() returns null.
  */
 @Singleton
 class ProfileImageProcessor @Inject constructor(
@@ -50,8 +55,8 @@ class ProfileImageProcessor @Inject constructor(
         val bytes: ByteArray,
         val width: Int,
         val height: Int,
-        val mimeType: String, // "image/webp" (we convert everything to WebP)
-        val hash: String,     // SHA-256 hex
+        val mimeType: String,
+        val hash: String,
         val sizeBytes: Int,
     ) {
         override fun equals(other: Any?): Boolean {
@@ -80,12 +85,17 @@ class ProfileImageProcessor @Inject constructor(
     /**
      * Load, decode, resize, strip EXIF, compress, and hash an image from a URI.
      *
+     * Reads the URI stream ONCE into memory, then does all processing
+     * from the in-memory byte array. This avoids the "Cannot open image
+     * stream" error caused by Photo Picker URIs that can only be opened once.
+     *
      * @param uri Content URI from Photo Picker or file picker
      * @return [ProcessedImage] with compressed bytes and metadata
      * @throws IllegalArgumentException if the image is invalid or too large
      */
     suspend fun processFromUri(uri: Uri): ProcessedImage =
         withContext(Dispatchers.IO) {
+            // Validate MIME type
             val mimeType = context.contentResolver.getType(uri)
                 ?: throw IllegalArgumentException("Unknown image type")
 
@@ -95,41 +105,53 @@ class ProfileImageProcessor @Inject constructor(
                 )
             }
 
-            // Step 1: Decode with bounds-only first to get dimensions
-            val options = BitmapFactory.Options().apply {
+            // ── Read ONCE into memory ──────────────────────────────
+            val rawBytes: ByteArray = context.contentResolver.openInputStream(uri)?.use { input ->
+                input.readBytes()
+            } ?: throw IllegalStateException("Cannot open image stream — the file may have been moved or deleted.")
+
+            if (rawBytes.size > MAX_FILE_SIZE_BYTES * 5) {
+                throw IllegalArgumentException(
+                    "Image too large: ${rawBytes.size / 1024} KB (max ${MAX_FILE_SIZE_BYTES / 1024} KB)"
+                )
+            }
+
+            Timber.d("Image loaded into memory: ${rawBytes.size} bytes, type=$mimeType")
+
+            // ── Step 1: Decode bounds ─────────────────────────────
+            val boundsOptions = BitmapFactory.Options().apply {
                 inJustDecodeBounds = true
             }
-            context.contentResolver.openInputStream(uri)?.use { input ->
-                BitmapFactory.decodeStream(input, null, options)
-            } ?: throw IllegalStateException("Cannot open image stream")
+            BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, boundsOptions)
 
-            // Step 2: Calculate sample size for memory-efficient down-scaling
-            options.apply {
+            if (boundsOptions.outWidth <= 0 || boundsOptions.outHeight <= 0) {
+                throw IllegalArgumentException("Invalid image — cannot decode dimensions")
+            }
+
+            val imageWidth = boundsOptions.outWidth
+            val imageHeight = boundsOptions.outHeight
+
+            // ── Step 2: Read EXIF rotation from raw bytes ─────────
+            val rotation = getExifRotation(rawBytes)
+
+            // ── Step 3: Decode with sample size ───────────────────
+            val decodeOptions = BitmapFactory.Options().apply {
                 inJustDecodeBounds = false
-                inSampleSize = calculateSampleSize(
-                    options.outWidth, options.outHeight
-                )
-                inPreferredConfig = Bitmap.Config.RGB_565 // 2 bytes/pixel instead of 4
+                inSampleSize = calculateSampleSize(imageWidth, imageHeight)
+                inPreferredConfig = Bitmap.Config.RGB_565
                 inMutable = false
             }
 
             var bitmap: Bitmap? = null
             try {
-                // Step 3: Decode with sample size
-                context.contentResolver.openInputStream(uri)?.use { input ->
-                    bitmap = BitmapFactory.decodeStream(input, null, options)
-                }
+                bitmap = BitmapFactory.decodeByteArray(
+                    rawBytes, 0, rawBytes.size, decodeOptions
+                ) ?: throw IllegalStateException("Image decoding returned null")
 
-                val decoded = bitmap
-                    ?: throw IllegalStateException("Image decoding returned null")
+                // ── Step 4: Resize if needed ──────────────────────
+                val resized = resizeIfNeeded(bitmap, MAX_DIMENSION)
 
-                // Step 4: Resize to max dimensions if still too large
-                val resized = resizeIfNeeded(decoded, MAX_DIMENSION)
-
-                // Step 5: Strip EXIF by re-encoding — this naturally drops all metadata
-                val outputStream = ByteArrayOutputStream()
-                val rotation = getExifRotation(uri)
-
+                // ── Step 5: Apply EXIF rotation ───────────────────
                 val finalBitmap = if (rotation != 0f) {
                     val matrix = Matrix().apply { postRotate(rotation) }
                     Bitmap.createBitmap(
@@ -139,45 +161,37 @@ class ProfileImageProcessor @Inject constructor(
                     resized
                 }
 
-                // Step 6: Compress to WebP (smaller files, good quality, universal support)
+                // ── Step 6: Compress to WebP ──────────────────────
+                val outputStream = ByteArrayOutputStream()
                 finalBitmap.compress(Bitmap.CompressFormat.WEBP, WEBP_QUALITY, outputStream)
-                val bytes = outputStream.toByteArray()
+                var compressedBytes = outputStream.toByteArray()
 
-                // Step 7: Validate final size
-                if (bytes.size > MAX_FILE_SIZE_BYTES) {
-                    // Re-compress with lower quality
+                // ── Step 7: Re-compress if too large ──────────────
+                if (compressedBytes.size > MAX_FILE_SIZE_BYTES) {
                     outputStream.reset()
                     finalBitmap.compress(Bitmap.CompressFormat.WEBP, 60, outputStream)
-                    val smaller = outputStream.toByteArray()
-                    if (smaller.size > MAX_FILE_SIZE_BYTES) {
+                    compressedBytes = outputStream.toByteArray()
+
+                    if (compressedBytes.size > MAX_FILE_SIZE_BYTES) {
                         throw IllegalArgumentException(
-                            "Image too large even after compression: ${bytes.size} bytes"
+                            "Image too large even after maximum compression: ${compressedBytes.size / 1024} KB"
                         )
                     }
-                    val hash = computeHash(smaller)
-                    return@withContext ProcessedImage(
-                        bytes = smaller,
-                        width = finalBitmap.width,
-                        height = finalBitmap.height,
-                        mimeType = "image/webp",
-                        hash = hash,
-                        sizeBytes = smaller.size,
-                    )
                 }
 
-                val hash = computeHash(bytes)
+                val hash = computeHash(compressedBytes)
                 Timber.i(
                     "Image processed: ${finalBitmap.width}x${finalBitmap.height}, " +
-                            "${bytes.size}B, hash=$hash"
+                            "${compressedBytes.size}B, hash=$hash"
                 )
 
                 ProcessedImage(
-                    bytes = bytes,
+                    bytes = compressedBytes,
                     width = finalBitmap.width,
                     height = finalBitmap.height,
                     mimeType = "image/webp",
                     hash = hash,
-                    sizeBytes = bytes.size,
+                    sizeBytes = compressedBytes.size,
                 )
             } finally {
                 bitmap?.recycle()
@@ -186,7 +200,6 @@ class ProfileImageProcessor @Inject constructor(
 
     /**
      * Validate and hash a received image from a peer.
-     * Returns true if the image matches the expected hash.
      */
     fun validateImage(bytes: ByteArray, expectedHash: String): Boolean {
         val actualHash = computeHash(bytes)
@@ -250,25 +263,24 @@ class ProfileImageProcessor @Inject constructor(
     }
 
     /**
-     * Read EXIF rotation and return the degrees to rotate.
-     * Returns 0 if no rotation needed.
+     * Read EXIF rotation from raw bytes (instead of URI stream).
+     * This avoids needing a second openInputStream() on the URI.
      */
-    private fun getExifRotation(uri: Uri): Float {
+    private fun getExifRotation(rawBytes: ByteArray): Float {
         return try {
-            context.contentResolver.openInputStream(uri)?.use { input ->
-                val exif = ExifInterface(input)
-                when (exif.getAttributeInt(
-                    ExifInterface.TAG_ORIENTATION,
-                    ExifInterface.ORIENTATION_NORMAL
-                )) {
-                    ExifInterface.ORIENTATION_ROTATE_90 -> 90f
-                    ExifInterface.ORIENTATION_ROTATE_180 -> 180f
-                    ExifInterface.ORIENTATION_ROTATE_270 -> 270f
-                    else -> 0f
-                }
-            } ?: 0f
+            val input = ByteArrayInputStream(rawBytes)
+            val exif = ExifInterface(input)
+            when (exif.getAttributeInt(
+                ExifInterface.TAG_ORIENTATION,
+                ExifInterface.ORIENTATION_NORMAL
+            )) {
+                ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+                ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+                ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+                else -> 0f
+            }
         } catch (e: Exception) {
-            Timber.w(e, "Failed to read EXIF rotation")
+            Timber.w(e, "Failed to read EXIF rotation — using 0°")
             0f
         }
     }

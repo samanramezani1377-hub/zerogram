@@ -4,7 +4,6 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.zerochat.crypto.CryptoEngine
-import com.zerochat.data.model.UserProfile
 import com.zerochat.domain.profile.ProfileImageRepository
 import com.zerochat.domain.profile.ProfileImageUseCase
 import com.zerochat.domain.profile.ProfileSyncHandler
@@ -64,7 +63,6 @@ class SettingsViewModel @Inject constructor(
                 )
             }
 
-            // Observe local profile for picture changes
             profileImageRepository.getLocalProfile(fingerprint).collect { profile ->
                 _uiState.update {
                     it.copy(
@@ -77,57 +75,60 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    // ── Bottom Sheet ──────────────────────────────────────────────
-
     fun showBottomSheet() {
-        _uiState.update { it.copy(showBottomSheet = true) }
+        _uiState.update { it.copy(showBottomSheet = true, error = null) }
     }
 
     fun hideBottomSheet() {
         _uiState.update { it.copy(showBottomSheet = false) }
     }
 
-    // ── Change Profile Photo ──────────────────────────────────────
-
     fun changeProfilePhoto(uri: Uri) {
         viewModelScope.launch {
             _uiState.update { it.copy(isProcessingImage = true, error = null) }
 
-            val result = profileImageUseCase(localFingerprint, uri)
-            result.fold(
-                onSuccess = { hash ->
-                    _uiState.update { it.copy(isProcessingImage = false) }
-                    // Broadcast to peers
-                    val profile =
-                        profileImageRepository.getLocalProfileOnce(localFingerprint)
-                    profile?.let { p ->
-                        val size = try {
-                            p.profileImagePath?.let { path ->
-                                profileImageUseCase.loadImage(path)?.size ?: 0
-                            } ?: 0
-                        } catch (_: Exception) {
-                            0
+            try {
+                val result = profileImageUseCase(localFingerprint, uri)
+                result.fold(
+                    onSuccess = { hash ->
+                        _uiState.update { it.copy(isProcessingImage = false) }
+                        val profile =
+                            profileImageRepository.getLocalProfileOnce(localFingerprint)
+                        profile?.let { p ->
+                            val size = try {
+                                p.profileImagePath?.let { path ->
+                                    profileImageUseCase.loadImage(path)?.size ?: 0
+                                } ?: 0
+                            } catch (_: Exception) { 0 }
+                            profileSyncHandler.broadcastProfileUpdate(
+                                imageId = p.profileImageId ?: "",
+                                imageHash = p.profileImageHash ?: "",
+                                imageSize = size,
+                            )
                         }
-                        profileSyncHandler.broadcastProfileUpdate(
-                            imageId = p.profileImageId ?: "",
-                            imageHash = p.profileImageHash ?: "",
-                            imageSize = size,
-                        )
-                    }
-                },
-                onFailure = { e ->
-                    _uiState.update {
-                        it.copy(
-                            isProcessingImage = false,
-                            error = e.message ?: "Failed to set profile photo",
-                        )
-                    }
-                },
-            )
+                    },
+                    onFailure = { e ->
+                        val msg = when {
+                            e is IllegalArgumentException -> e.message
+                            e is IllegalStateException -> e.message
+                            else -> "Failed to set profile photo"
+                        }
+                        _uiState.update {
+                            it.copy(isProcessingImage = false, error = msg)
+                        }
+                    },
+                )
+            } catch (e: Exception) {
+                Timber.e(e, "changeProfilePhoto failed")
+                _uiState.update {
+                    it.copy(
+                        isProcessingImage = false,
+                        error = e.message ?: "Something went wrong"
+                    )
+                }
+            }
         }
     }
-
-    // ── Remove Profile Photo ──────────────────────────────────────
 
     fun requestRemovePhoto() {
         _uiState.update { it.copy(showRemoveConfirm = true) }
@@ -140,12 +141,9 @@ class SettingsViewModel @Inject constructor(
     fun confirmRemovePhoto() {
         viewModelScope.launch {
             _uiState.update { it.copy(showRemoveConfirm = false, error = null) }
-
             val result = profileImageUseCase.removeImage(localFingerprint)
             result.fold(
-                onSuccess = {
-                    profileSyncHandler.broadcastProfileRemoved()
-                },
+                onSuccess = { profileSyncHandler.broadcastProfileRemoved() },
                 onFailure = { e ->
                     _uiState.update {
                         it.copy(error = e.message ?: "Failed to remove profile photo")
@@ -154,8 +152,6 @@ class SettingsViewModel @Inject constructor(
             )
         }
     }
-
-    // ── Preview ───────────────────────────────────────────────────
 
     fun showPreview() {
         _uiState.update { it.copy(showPreview = true) }

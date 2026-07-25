@@ -10,12 +10,6 @@ import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/**
- * Orchestrates profile image selection, processing, storage, and removal.
- *
- * This use case encapsulates the full flow:
- *   Pick URI → Process (resize/compress/strip/hash) → Save to storage → Update DB.
- */
 @Singleton
 class ProfileImageUseCase @Inject constructor(
     private val imageProcessor: ProfileImageProcessor,
@@ -28,14 +22,14 @@ class ProfileImageUseCase @Inject constructor(
      *
      * @param fingerprint the local user's identity fingerprint
      * @param imageUri the content URI from the Photo Picker
-     * @return the image hash on success
+     * @return Result.success(imageHash) or Result.failure(exception)
      */
     suspend operator fun invoke(
         fingerprint: String,
         imageUri: Uri,
     ): Result<String> = withContext(Dispatchers.IO) {
         try {
-            // 1. Process image (resize, compress, strip EXIF, hash)
+            // 1. Process image (single-stream read into memory, then decode)
             val processed = imageProcessor.processFromUri(imageUri)
 
             // 2. Save to internal storage
@@ -52,30 +46,24 @@ class ProfileImageUseCase @Inject constructor(
                 imageHash = processed.hash,
             )
 
-            Timber.i("Profile image set: ${processed.width}x${processed.height}, " +
-                    "${processed.sizeBytes}B, hash=${processed.hash}")
+            Timber.i(
+                "Profile image set: ${processed.width}x${processed.height}, " +
+                        "${processed.sizeBytes}B, hash=${processed.hash}"
+            )
             Result.success(processed.hash)
         } catch (e: Exception) {
             Timber.e(e, "Failed to set profile image")
+            // Pass the original exception so the ViewModel gets the real message
             Result.failure(e)
         }
     }
 
-    /**
-     * Remove the local user's profile image.
-     */
     suspend fun removeImage(fingerprint: String): Result<Unit> =
         withContext(Dispatchers.IO) {
             try {
-                // 1. Get current profile to find old image path
                 val profile = profileRepository.getLocalProfileOnce(fingerprint)
-
-                // 2. Delete old image file
                 profile?.profileImagePath?.let { imageStorage.delete(it) }
-
-                // 3. Update database
                 profileRepository.removeLocalProfileImage(fingerprint)
-
                 Timber.i("Profile image removed for $fingerprint")
                 Result.success(Unit)
             } catch (e: Exception) {
@@ -84,9 +72,6 @@ class ProfileImageUseCase @Inject constructor(
             }
         }
 
-    /**
-     * Load profile image bytes for display.
-     */
     suspend fun loadImage(imagePath: String): ByteArray? =
         withContext(Dispatchers.IO) {
             imageStorage.load(imagePath)
