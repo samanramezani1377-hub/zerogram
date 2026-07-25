@@ -24,6 +24,8 @@ import com.zerochat.ui.blocked.BlockedPeersScreen
  *  - discovery (find nearby peers)
  *  - chat/{peerFingerprint} (conversation)
  *  - settings
+ *  - requests (connection request inbox)
+ *  - blocked (blocked peers list)
  *
  * Uses Compose Navigation with standard slide transitions.
  */
