@@ -20,6 +20,8 @@
         android:name=".ZeroChatApp"
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.ZeroChat"
@@ -30,6 +32,8 @@
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
+            android:icon="@mipmap/ic_launcher"
+            android:roundIcon="@mipmap/ic_launcher_round"
             android:theme="@style/Theme.ZeroChat">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
