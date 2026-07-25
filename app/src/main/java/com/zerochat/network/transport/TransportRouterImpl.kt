@@ -151,7 +151,6 @@ class TransportRouterImpl @Inject constructor(
         Timber.i("✓ Route: $actualFingerprint → $ipAddress:$port [LAN]")
         actualFingerprint
     }
-    }
 
     override suspend fun connectWan(peerFingerprint: String): WanConnectionOffer {
         val offerSdp = wanTransport.createOffer()
@@ -198,5 +197,6 @@ class TransportRouterImpl @Inject constructor(
             )
             Timber.i("✓ Auto-route registered for incoming $fingerprint @ $senderIp")
         }
-    }
+}
+
 }
