@@ -19,6 +19,8 @@ import com.zerochat.network.lan.LanTransportImpl
 import com.zerochat.network.lan.WifiDirectReceiver
 import com.zerochat.network.transport.TransportRouter
 import com.zerochat.network.transport.TransportRouterImpl
+import com.zerochat.network.signaling.SignalingClient
+import com.zerochat.network.signaling.WanSignalingManager
 import com.zerochat.network.wan.WanTransport
 import com.zerochat.network.wan.WebRtcTransport
 import dagger.Module
@@ -133,4 +135,15 @@ object AppModule {
     ): ProfileSyncHandler = ProfileSyncHandler(
         transportRouter, profileRepository, imageStorage, imageProcessor
     )
+
+    // ── Signaling (WAN via PIN) ─────────────────────────────────
+
+    @Provides @Singleton
+    fun provideSignalingClient(): SignalingClient = SignalingClient()
+
+    @Provides @Singleton
+    fun provideWanSignalingManager(
+        signalingClient: SignalingClient,
+        transportRouter: TransportRouter,
+    ): WanSignalingManager = WanSignalingManager(signalingClient, transportRouter)
 }

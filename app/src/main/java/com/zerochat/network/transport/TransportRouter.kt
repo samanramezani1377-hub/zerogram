@@ -1,6 +1,7 @@
 package com.zerochat.network.transport
 
 import com.zerochat.data.model.TransportMode
+import com.zerochat.network.wan.IceCandidate
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -73,6 +74,14 @@ interface TransportRouter {
 
     /** Complete a WAN connection by setting the remote answer */
     suspend fun completeWanConnection(peerFingerprint: String, answerSdp: String)
+
+    /** Add a remote ICE candidate for WAN connection */
+    suspend fun addIceCandidate(
+        candidate: String, sdpMid: String, sdpMLineIndex: Int,
+    )
+
+    /** Flow of locally generated ICE candidates for WAN connections */
+    fun localIceCandidates(): Flow<IceCandidate>
 }
 
 /**

@@ -178,6 +178,14 @@ class TransportRouterImpl @Inject constructor(
         wanTransport.setRemoteAnswer(answerSdp)
     }
 
+    override suspend fun addIceCandidate(
+        candidate: String, sdpMid: String, sdpMLineIndex: Int,
+    ) {
+        wanTransport.addIceCandidate(candidate, sdpMid, sdpMLineIndex)
+    }
+
+    override fun localIceCandidates() = wanTransport.localIceCandidates()
+
     private fun resolveLanFingerprint(incoming: LanIncoming): String {
         val fp = incoming.peerFingerprint
         if (fp.isNotBlank() && fp != "unknown") return fp

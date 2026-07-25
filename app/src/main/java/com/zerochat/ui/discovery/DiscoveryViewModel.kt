@@ -7,6 +7,8 @@ import com.zerochat.data.model.TransportMode
 import com.zerochat.domain.PeerRepository
 import com.zerochat.network.lan.LanPeer
 import com.zerochat.network.lan.LanTransport
+import com.zerochat.network.signaling.WanConnectStatus
+import com.zerochat.network.signaling.WanSignalingManager
 import com.zerochat.network.transport.TransportRouter
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
@@ -33,6 +35,7 @@ class DiscoveryViewModel @Inject constructor(
     private val lanTransport: LanTransport,
     private val transportRouter: TransportRouter,
     private val peerRepository: PeerRepository,
+    private val wanSignalingManager: WanSignalingManager,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(DiscoveryUiState())
@@ -126,20 +129,44 @@ class DiscoveryViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
             _uiState.update { it.copy(isLookingUp = true, error = null, resolvedPeer = null) }
             try {
-                val peer = lanTransport.resolvePinCode(pin)
-                if (peer != null) {
+                // 1. Try LAN (mDNS) first — fast, no internet needed
+                val lanPeer = lanTransport.resolvePinCode(pin)
+                if (lanPeer != null) {
                     _uiState.update {
-                        it.copy(isLookingUp = false, resolvedPeer = peer, lookupPin = pin)
+                        it.copy(isLookingUp = false, resolvedPeer = lanPeer, lookupPin = pin)
                     }
-                    connectToPeer(peer)
-                } else {
-                    _uiState.update {
-                        it.copy(
-                            isLookingUp = false,
-                            error = "No device with PIN $pin.\nBoth devices must be on same WiFi."
-                        )
-                    }
+                    connectToPeer(lanPeer)
+                    return@launch
                 }
+
+                // 2. Fall back to WAN via signaling server
+                Timber.i("PIN not found on LAN — trying WAN signaling")
+                _uiState.update { it.copy(isLookingUp = true, error = "Searching via internet...") }
+
+                wanSignalingManager.connectWithPin(pin)
+
+                // Wait for connection result
+                wanSignalingManager.connectState
+                    .first { it.status == WanConnectStatus.CONNECTED || it.status == WanConnectStatus.ERROR }
+                    .let { state ->
+                        if (state.status == WanConnectStatus.CONNECTED) {
+                            _uiState.update {
+                                it.copy(
+                                    isLookingUp = false,
+                                    connectedPeerFingerprint = "wan_peer",
+                                    error = null,
+                                    lookupPin = pin,
+                                )
+                            }
+                        } else {
+                            _uiState.update {
+                                it.copy(
+                                    isLookingUp = false,
+                                    error = state.error ?: "No device found with PIN $pin on LAN or internet."
+                                )
+                            }
+                        }
+                    }
             } catch (e: Exception) {
                 _uiState.update { it.copy(isLookingUp = false, error = e.message) }
             }
