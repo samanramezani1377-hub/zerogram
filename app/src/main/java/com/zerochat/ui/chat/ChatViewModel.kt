@@ -52,9 +52,7 @@ class ChatViewModel @Inject constructor(
     fun initialize(peerFingerprint: String) {
         if (this.peerFingerprint == peerFingerprint &&
             messageCollectionJob?.isActive == true
-        ) {
-            return
-        }
+        ) return
 
         this.peerFingerprint = peerFingerprint
         this.localFingerprint = cryptoEngine.getLocalFingerprint()
@@ -62,15 +60,9 @@ class ChatViewModel @Inject constructor(
         messageCollectionJob?.cancel()
         peerFlowJob?.cancel()
 
-        viewModelScope.launch {
-            sessionManager.getOrCreateSession(peerFingerprint)
-        }
+        viewModelScope.launch { sessionManager.getOrCreateSession(peerFingerprint) }
+        viewModelScope.launch { incomingMessageHandler.startListening() }
 
-        viewModelScope.launch {
-            incomingMessageHandler.startListening()
-        }
-
-        // Reactive message collection
         messageCollectionJob = viewModelScope.launch {
             try {
                 messageRepository.getMessages(peerFingerprint).collect { messages ->
@@ -90,10 +82,8 @@ class ChatViewModel @Inject constructor(
                     }
                 }
             } catch (e: Exception) {
-                Timber.e(e, "Error collecting messages for $peerFingerprint")
-                _uiState.update {
-                    it.copy(isLoading = false, error = "Failed to load messages")
-                }
+                Timber.e(e, "Error collecting messages")
+                _uiState.update { it.copy(isLoading = false, error = "Failed to load messages") }
             }
         }
 
@@ -112,32 +102,20 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val mode = transportRouter.currentMode(peerFingerprint)
-                _uiState.update {
-                    it.copy(
-                        transportMode = mode,
-                        isConnected = mode != TransportMode.UNKNOWN,
-                    )
-                }
+                _uiState.update { it.copy(transportMode = mode, isConnected = mode != TransportMode.UNKNOWN) }
             } catch (_: Exception) {}
         }
     }
 
     fun sendMessage(text: String) {
-        if (peerFingerprint.isBlank()) {
-            _uiState.update { it.copy(error = "No peer selected") }
-            return
-        }
-
-        val trimmed = text.trim()
-        if (trimmed.isEmpty()) return
-
+        if (peerFingerprint.isBlank() || text.isBlank()) return
         viewModelScope.launch {
             try {
                 val message = Message(
                     id = Message.createId(localFingerprint),
                     conversationId = peerFingerprint,
                     senderFingerprint = localFingerprint,
-                    plainContent = trimmed,
+                    plainContent = text,
                     content = "",
                     contentType = ContentType.TEXT,
                     timestamp = System.currentTimeMillis(),
@@ -145,56 +123,40 @@ class ChatViewModel @Inject constructor(
                     isOutgoing = true,
                     transportMode = transportRouter.currentMode(peerFingerprint),
                 )
-
                 messageRepository.saveMessage(message)
-
-                val result = sendMessageUseCase.sendOptimistic(message, trimmed)
-
-                when (result.status) {
-                    MessageStatus.FAILED -> {
-                        _uiState.update {
-                            it.copy(error = "Not connected. Connect first, then try again.")
-                        }
-                    }
-                    MessageStatus.SENT -> {
-                        _uiState.update { it.copy(error = null) }
-                    }
-                    else -> {}
+                val result = sendMessageUseCase.sendOptimistic(message, text)
+                _uiState.update {
+                    it.copy(error = if (result.status == MessageStatus.FAILED)
+                        "Not connected. Connect first, then try again." else null)
                 }
             } catch (e: Exception) {
-                Timber.e(e, "Error sending message to $peerFingerprint")
-                _uiState.update { it.copy(error = "Failed to send: " + (e.message ?: "unknown")) }
+                Timber.e(e, "Send failed")
+                _uiState.update { it.copy(error = "Failed: " + (e.message ?: "unknown")) }
             }
         }
     }
 
     fun retryMessage(messageId: String) {
         viewModelScope.launch {
+            val failed = _uiState.value.messages.find { it.id == messageId } ?: return@launch
+            messageRepository.updateStatus(messageId, MessageStatus.PENDING)
+            val result = sendMessageUseCase.sendOptimistic(
+                failed.copy(status = MessageStatus.PENDING), failed.plainContent
+            )
+            _uiState.update {
+                it.copy(error = if (result.status == MessageStatus.FAILED) "Retry failed" else null)
+            }
+        }
+    }
+
+    fun deleteMessage(messageId: String) {
+        viewModelScope.launch {
             try {
-                val failedMessage = _uiState.value.messages.find { it.id == messageId }
-                if (failedMessage == null) {
-                    Timber.w("Cannot retry - message $messageId not found")
-                    return@launch
-                }
-
-                messageRepository.updateStatus(messageId, MessageStatus.PENDING)
-
-                val result = sendMessageUseCase.sendOptimistic(
-                    failedMessage.copy(status = MessageStatus.PENDING),
-                    failedMessage.plainContent,
-                )
-
-                _uiState.update {
-                    it.copy(
-                        error = when (result.status) {
-                            MessageStatus.FAILED -> "Retry failed - tap to retry"
-                            else -> null
-                        },
-                    )
-                }
+                messageRepository.deleteMessage(messageId)
+                Timber.d("Message deleted: $messageId")
             } catch (e: Exception) {
-                Timber.e(e, "Retry failed for message $messageId")
-                _uiState.update { it.copy(error = "Retry failed: " + (e.message ?: "unknown")) }
+                Timber.e(e, "Delete failed")
+                _uiState.update { it.copy(error = "Failed to delete message") }
             }
         }
     }
@@ -204,18 +166,14 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val fileName = uriString.substringAfterLast("/")
-                sendMessage("\uD83D\uDCCE $fileName")
+                sendMessage("file: $fileName")
             } catch (e: Exception) {
-                _uiState.update {
-                    it.copy(error = "Failed to send media: " + (e.message ?: "unknown"))
-                }
+                _uiState.update { it.copy(error = "Failed to send media") }
             }
         }
     }
 
-    fun clearError() {
-        _uiState.update { it.copy(error = null) }
-    }
+    fun clearError() { _uiState.update { it.copy(error = null) } }
 
     override fun onCleared() {
         super.onCleared()
@@ -223,17 +181,11 @@ class ChatViewModel @Inject constructor(
         peerFlowJob?.cancel()
     }
 
-    private fun resolvePeerName(): String {
-        return _uiState.value.peerName.let {
+    private fun resolvePeerName() =
+        _uiState.value.peerName.let {
             if (it == "Unknown") formatPeerName(peerFingerprint) else it
         }
-    }
 
-    private fun formatPeerName(fingerprint: String): String {
-        return if (fingerprint.length >= 12) {
-            fingerprint.take(8) + "..." + fingerprint.takeLast(4)
-        } else {
-            fingerprint
-        }
-    }
+    private fun formatPeerName(fp: String) =
+        if (fp.length >= 12) fp.take(8) + "..." + fp.takeLast(4) else fp
 }
