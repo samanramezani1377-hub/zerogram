@@ -1,30 +1,31 @@
 package com.zerochat.ui.chat
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
-import androidx.compose.material.icons.outlined.AttachFile
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -34,7 +35,7 @@ import com.zerochat.data.model.TransportMode
 import com.zerochat.ui.profile.ProfileImage
 import com.zerochat.ui.theme.TelegramBlue
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun ChatScreen(
     peerFingerprint: String,
@@ -44,8 +45,17 @@ fun ChatScreen(
     val uiState by viewModel.uiState.collectAsState()
     var messageText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
+    val context = LocalContext.current
 
-    LaunchedEffect(peerFingerprint) { viewModel.initialize(peerFingerprint) }
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        uri?.let { viewModel.sendMedia(it.toString()) }
+    }
+
+    LaunchedEffect(peerFingerprint) {
+        viewModel.initialize(peerFingerprint)
+    }
 
     LaunchedEffect(uiState.messages.size) {
         if (uiState.messages.isNotEmpty()) {
@@ -65,20 +75,17 @@ fun ChatScreen(
                                 uiState.peerName,
                                 fontWeight = FontWeight.SemiBold,
                                 maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
                             )
                             Text(
                                 text = when (uiState.transportMode) {
-                                    TransportMode.LAN -> "online via LAN"
+                                    TransportMode.LAN -> if (uiState.isConnected) "online via LAN" else "connecting..."
                                     TransportMode.WAN -> "online via Internet"
                                     TransportMode.UNKNOWN -> if (uiState.isConnected) "online" else "connecting..."
                                 },
                                 style = MaterialTheme.typography.bodySmall,
-                                color = if (uiState.isConnected)
-                                    Color(0xFF4CAF50)
-                                else
-                                    MaterialTheme.colorScheme.onSurfaceVariant,
                                 fontSize = 12.sp,
+                                color = if (uiState.isConnected) Color(0xFF4CAF50)
+                                        else MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                     }
@@ -103,41 +110,47 @@ fun ChatScreen(
             )
         },
         bottomBar = {
-            Surface(
-                shadowElevation = 2.dp,
-                color = MaterialTheme.colorScheme.surface,
-            ) {
-                Column {
-                    AnimatedVisibility(
-                        visible = uiState.error != null,
-                        enter = fadeIn(),
-                        exit = fadeOut(),
+            Column {
+                AnimatedVisibility(
+                    visible = uiState.error != null,
+                    enter = fadeIn(),
+                    exit = fadeOut(),
+                ) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Surface(
-                            color = MaterialTheme.colorScheme.errorContainer,
-                            modifier = Modifier.fillMaxWidth(),
+                        Row(
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically,
+                            Icon(
+                                Icons.Default.ErrorOutline,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onErrorContainer,
+                                modifier = Modifier.size(16.dp),
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = uiState.error ?: "",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                modifier = Modifier.weight(1f),
+                            )
+                            IconButton(
+                                onClick = { viewModel.clearError() },
+                                modifier = Modifier.size(20.dp),
                             ) {
-                                Icon(
-                                    Icons.Default.ErrorOutline,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onErrorContainer,
-                                    modifier = Modifier.size(16.dp),
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = uiState.error ?: "",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onErrorContainer,
-                                    modifier = Modifier.weight(1f),
-                                )
+                                Icon(Icons.Default.Close, "Dismiss", Modifier.size(16.dp))
                             }
                         }
                     }
+                }
 
+                Surface(
+                    shadowElevation = 2.dp,
+                    color = MaterialTheme.colorScheme.surface,
+                ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -145,10 +158,10 @@ fun ChatScreen(
                             .padding(horizontal = 8.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        IconButton(onClick = { }) {
+                        IconButton(onClick = { filePickerLauncher.launch("*/*") }) {
                             Icon(
-                                Icons.Outlined.AttachFile,
-                                contentDescription = "Attach",
+                                Icons.Default.AttachFile,
+                                contentDescription = "Attach file",
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
@@ -171,36 +184,29 @@ fun ChatScreen(
                                 unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
                                 focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
                             ),
+                            singleLine = true,
                         )
 
                         Spacer(modifier = Modifier.width(6.dp))
 
                         val canSend = messageText.isNotBlank()
-                        Surface(
-                            modifier = Modifier
-                                .size(42.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    if (canSend) TelegramBlue
-                                    else MaterialTheme.colorScheme.surfaceVariant
-                                )
-                                .clickable(enabled = canSend) {
+                        IconButton(
+                            onClick = {
+                                if (messageText.isNotBlank()) {
                                     viewModel.sendMessage(messageText.trim())
                                     messageText = ""
-                                },
-                            shape = CircleShape,
-                            color = if (canSend) TelegramBlue
-                                    else MaterialTheme.colorScheme.surfaceVariant,
+                                }
+                            },
+                            enabled = canSend,
+                            modifier = Modifier.size(42.dp),
                         ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    Icons.AutoMirrored.Filled.Send,
-                                    contentDescription = "Send",
-                                    tint = if (canSend) Color.White
-                                           else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                                    modifier = Modifier.size(20.dp),
-                                )
-                            }
+                            Icon(
+                                Icons.Default.Send,
+                                contentDescription = "Send",
+                                tint = if (canSend) TelegramBlue
+                                       else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                                modifier = Modifier.size(22.dp),
+                            )
                         }
                     }
                 }
@@ -224,33 +230,15 @@ fun ChatScreen(
                 ) {
                     ProfileImage(imagePath = uiState.peerProfileImagePath, size = 80.dp)
                     Spacer(modifier = Modifier.height(16.dp))
-                    Text(
-                        uiState.peerName,
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold,
-                    )
+                    Text(uiState.peerName, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     Spacer(modifier = Modifier.height(8.dp))
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                    ) {
-                        Row(
+                    Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+                        Text(
+                            "End-to-end encrypted",
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Icon(
-                                Icons.Default.Lock,
-                                contentDescription = null,
-                                tint = Color(0xFF4CAF50),
-                                modifier = Modifier.size(14.dp),
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                "End-to-end encrypted",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
             }
@@ -265,7 +253,15 @@ fun ChatScreen(
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
                 ) {
                     items(uiState.messages, key = { it.id }) { message ->
-                        MessageBubble(message = message)
+                        MessageBubble(
+                            message = message,
+                            onDelete = { viewModel.deleteMessage(message.id) },
+                            onCopy = {
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                clipboard.setPrimaryClip(ClipData.newPlainText("message", message.plainContent))
+                            },
+                            onRetry = { viewModel.retryMessage(message.id) },
+                        )
                     }
                 }
             }
@@ -273,18 +269,27 @@ fun ChatScreen(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MessageBubble(message: Message) {
+private fun MessageBubble(
+    message: Message,
+    onDelete: () -> Unit = {},
+    onCopy: () -> Unit = {},
+    onRetry: () -> Unit = {},
+) {
+    var showMenu by remember { mutableStateOf(false) }
     val isSent = message.isOutgoing
+    val isFailed = message.status == MessageStatus.FAILED
 
     val bubbleColor = if (isSent) TelegramBlue
                       else MaterialTheme.colorScheme.surfaceVariant
-
     val textColor = if (isSent) Color.White
                     else MaterialTheme.colorScheme.onSurface
 
     Column(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
         horizontalAlignment = if (isSent) Alignment.End else Alignment.Start,
     ) {
         Box(
@@ -298,6 +303,10 @@ private fun MessageBubble(message: Message) {
                     )
                 )
                 .background(bubbleColor)
+                .combinedClickable(
+                    onClick = { if (isFailed) onRetry() },
+                    onLongClick = { showMenu = true },
+                )
                 .padding(horizontal = 12.dp, vertical = 8.dp)
         ) {
             Column {
@@ -334,7 +343,39 @@ private fun MessageBubble(message: Message) {
                         }
                     }
                 }
+                if (isFailed) {
+                    Text(
+                        "Tap to retry",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = textColor.copy(alpha = 0.7f),
+                    )
+                }
             }
+        }
+
+        // Long-press menu
+        DropdownMenu(
+            expanded = showMenu,
+            onDismissRequest = { showMenu = false },
+        ) {
+            DropdownMenuItem(
+                text = { Text("Copy") },
+                onClick = {
+                    showMenu = false
+                    onCopy()
+                },
+                leadingIcon = { Icon(Icons.Default.ContentCopy, null) },
+            )
+            DropdownMenuItem(
+                text = { Text("Delete", color = Color(0xFFE53935)) },
+                onClick = {
+                    showMenu = false
+                    onDelete()
+                },
+                leadingIcon = {
+                    Icon(Icons.Default.Delete, null, tint = Color(0xFFE53935))
+                },
+            )
         }
     }
 }
