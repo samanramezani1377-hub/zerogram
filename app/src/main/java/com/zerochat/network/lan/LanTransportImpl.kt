@@ -223,7 +223,7 @@ class LanTransportImpl @Inject constructor(
         wifiDirectDiscoveryJob = serverScope.launch {
             while (isActive) {
                 discoverPeers()
-                delay(10_000) // Every 10 seconds
+                delay(5_000) // Every 5 seconds
             }
         }
     }

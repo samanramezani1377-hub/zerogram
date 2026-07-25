@@ -9,10 +9,7 @@ import com.zerochat.network.lan.LanPeer
 import com.zerochat.network.lan.LanTransport
 import com.zerochat.network.transport.TransportRouter
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import timber.log.Timber
 import javax.inject.Inject
@@ -40,62 +37,36 @@ class DiscoveryViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(DiscoveryUiState())
     val uiState: StateFlow<DiscoveryUiState> = _uiState.asStateFlow()
 
-    private var silentRefreshJob: Job? = null
-
     init {
         startDiscovery()
         observeDiscoveredPeers()
         generatePinCode()
-        startSilentRefresh()
     }
 
     // ── WiFi / mDNS Discovery ────────────────────────────────────
 
+    /**
+     * Start discovery. Safe to call multiple times — restarts services
+     * if already running.
+     *
+     * Called once on screen open, and again when user taps refresh.
+     * Discovery runs continuously in the background (WiFi Direct scans
+     * every ~10s via LanTransportImpl.discoverPeersPeriodic).
+     * The Flow from lanTransport.discoveredPeers() updates the UI
+     * reactively whenever peers change.
+     */
     fun startDiscovery() {
         viewModelScope.launch {
             _uiState.update { it.copy(isDiscovering = true, error = null) }
             try {
-                // Restart WiFi Direct discovery (sends fresh probe)
                 lanTransport.stopWiFiDirectDiscovery()
                 lanTransport.startWiFiDirectDiscovery()
-                // Restart mDNS too
                 lanTransport.stopMdnsDiscovery()
                 lanTransport.startMdnsDiscovery()
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(error = e.message, isDiscovering = false)
                 }
-            }
-        }
-    }
-
-    /**
-     * Silent auto-refresh: re-discovers peers every 5 seconds
-     * WITHOUT showing the spinner or disrupting the user.
-     *
-     * The user only sees `isDiscovering = true` on the initial scan.
-     * After that, discovery is silent — peers appear/disappear smoothly.
-     */
-    private fun startSilentRefresh() {
-        silentRefreshJob?.cancel()
-        silentRefreshJob = viewModelScope.launch {
-            // Wait for initial discovery to settle
-            delay(3_000)
-
-            while (isActive) {
-                try {
-                    // Only re-trigger discovery if we're not already scanning
-                    if (!_uiState.value.isDiscovering) {
-                        lanTransport.stopWiFiDirectDiscovery()
-                        lanTransport.startWiFiDirectDiscovery()
-                        lanTransport.stopMdnsDiscovery()
-                        lanTransport.startMdnsDiscovery()
-                    }
-                } catch (_: Exception) {
-                    // Silent — don't bother the user
-                }
-
-                delay(5_000) // Every 5 seconds
             }
         }
     }
@@ -212,14 +183,6 @@ class DiscoveryViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Resolve a stable fingerprint from a LanPeer.
-     *
-     * Priority:
-     *  1. deviceId if it looks like a valid fingerprint
-     *  2. IP address as fallback
-     *  3. "lan_peer" as last resort
-     */
     fun resolveFingerprint(peer: LanPeer): String {
         val deviceId = peer.deviceId.trim()
         if (deviceId.isNotEmpty() &&
@@ -228,11 +191,6 @@ class DiscoveryViewModel @Inject constructor(
             return deviceId
         }
         return peer.ipAddress.ifBlank { "lan_peer" }
-    }
-
-    override fun onCleared() {
-        super.onCleared()
-        silentRefreshJob?.cancel()
     }
 
     // ── Private ──────────────────────────────────────────────────

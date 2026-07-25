@@ -201,11 +201,11 @@ private fun ScanTab(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        "Scanning automatically every 5 seconds...",
+                        "Make sure WiFi is enabled on both devices",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
                     OutlinedButton(onClick = { viewModel.startDiscovery() }) {
                         Icon(Icons.Default.Refresh, contentDescription = null)
                         Spacer(modifier = Modifier.width(8.dp))
@@ -319,7 +319,7 @@ private fun PinCodeTab(
                     textAlign = TextAlign.Center,
                 )
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(8.dp))
 
                 if (uiState.isAdvertisingPin) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
