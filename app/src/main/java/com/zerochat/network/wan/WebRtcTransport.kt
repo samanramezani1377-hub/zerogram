@@ -325,9 +325,6 @@ class WebRtcTransport @Inject constructor(
             }
             override fun onRenegotiationNeeded() {}
             override fun onAddTrack(p0: org.webrtc.RtpReceiver?, p1: Array<out org.webrtc.MediaStream>?) {}
-            override fun onIceCandidateError(p0: org.webrtc.PeerConnection.IceCandidateErrorEvent?) {
-                Timber.w("ICE candidate error: ${p0?.errorText}")
-            }
         }) ?: throw RuntimeException("Failed to create PeerConnection")
     }
 

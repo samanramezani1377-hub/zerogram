@@ -13,10 +13,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import com.zerochat.data.model.ConnectionStatus
 import com.zerochat.data.model.Peer
-import com.zerochat.ui.theme.OnlineIndicator
-import com.zerochat.ui.theme.OfflineIndicator
+import com.zerochat.data.model.TransportMode
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -50,56 +48,57 @@ fun ContactsScreen(
             )
         }
     ) { paddingValues ->
-        if (uiState.contacts.isEmpty()) {
-            // Empty state
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-            ) {
-                Text(
-                    text = "No contacts yet",
-                    style = MaterialTheme.typography.headlineSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = "Tap 'Find Peers' to discover nearby devices\nor add a peer manually by ID",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues),
-                contentPadding = PaddingValues(vertical = 8.dp),
-            ) {
-                // My ID card
-                item {
-                    MydentityCard(
-                        myId = uiState.myId,
-                        myIp = uiState.myIp,
-                    )
-                }
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues),
+        ) {
+            // My Identity Card
+            MyIdentityCard(
+                myId = uiState.myId,
+                myIp = uiState.myIp,
+            )
 
-                item {
-                    Text(
-                        text = "Contacts",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                    )
-                }
+            Spacer(modifier = Modifier.height(8.dp))
 
-                items(uiState.contacts, key = { it.id }) { peer ->
-                    ContactItem(
-                        peer = peer,
-                        onClick = { onNavigateToChat(peer.identity.fingerprint) },
-                    )
+            Text(
+                text = "Contacts",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+            )
+
+            if (uiState.contacts.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(32.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = "No contacts yet",
+                            style = MaterialTheme.typography.headlineSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Tap 'Find Peers' to discover nearby devices\nor add a peer manually by ID",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            } else {
+                LazyColumn(
+                    contentPadding = PaddingValues(vertical = 4.dp),
+                ) {
+                    items(uiState.contacts, key = { it.fingerprint }) { peer ->
+                        ContactItem(
+                            peer = peer,
+                            onClick = { onNavigateToChat(peer.fingerprint) },
+                        )
+                    }
                 }
             }
         }
@@ -107,11 +106,11 @@ fun ContactsScreen(
 }
 
 @Composable
-private fun MydentityCard(myId: String, myIp: String) {
+private fun MyIdentityCard(myId: String, myIp: String) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
+            .padding(horizontal = 16.dp, vertical = 4.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.primaryContainer,
         ),
@@ -145,26 +144,35 @@ private fun ContactItem(peer: Peer, onClick: () -> Unit) {
         modifier = Modifier.clickable(onClick = onClick),
         headlineContent = {
             Text(
-                text = peer.identity.displayName,
+                text = peer.displayName.ifBlank { peer.fingerprint.take(12) },
                 fontWeight = FontWeight.Medium,
             )
         },
         supportingContent = {
             Column {
-                Text(text = peer.identity.fingerprint.take(8))
-                if (peer.lastKnownIp != null) {
+                Text(text = peer.fingerprint.take(12))
+                if (peer.ipAddress.isNotEmpty()) {
                     Text(
-                        text = "${peer.lastKnownIp}:${peer.lastKnownPort}",
+                        text = "${peer.ipAddress}:${peer.port}",
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
+                Text(
+                    text = when (peer.preferredTransport) {
+                        TransportMode.LAN -> "LAN"
+                        TransportMode.WAN -> "Internet"
+                        TransportMode.UNKNOWN -> "Unknown"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
         },
         leadingContent = {
             Badge(
-                containerColor = when (peer.connectionStatus) {
-                    ConnectionStatus.CONNECTED -> OnlineIndicator
-                    else -> OfflineIndicator
+                containerColor = when (peer.preferredTransport) {
+                    TransportMode.LAN -> MaterialTheme.colorScheme.tertiary
+                    TransportMode.WAN -> MaterialTheme.colorScheme.primary
+                    TransportMode.UNKNOWN -> MaterialTheme.colorScheme.outline
                 },
                 modifier = Modifier.size(12.dp),
             ) {}

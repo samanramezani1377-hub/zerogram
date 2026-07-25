@@ -1,6 +1,7 @@
 package com.zerochat.ui.settings
 
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import com.zerochat.crypto.CryptoEngine
 import com.zerochat.network.lan.LanTransport
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -8,6 +9,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 data class SettingsUiState(
@@ -26,12 +28,17 @@ class SettingsViewModel @Inject constructor(
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
 
     init {
-        _uiState.update {
-            it.copy(
-                myFingerprint = "ZC:${cryptoEngine.getLocalFingerprint()}",
-                myPublicKey = cryptoEngine.getPublicIdentityKey(),
-                localIps = lanTransport.getLocalAddresses(),
-            )
+        viewModelScope.launch {
+            val fingerprint = cryptoEngine.getLocalFingerprint()
+            val publicKey = cryptoEngine.getPublicIdentityKey()
+            val ips = lanTransport.getLocalAddresses()
+            _uiState.update {
+                it.copy(
+                    myFingerprint = "ZC:$fingerprint",
+                    myPublicKey = publicKey,
+                    localIps = ips,
+                )
+            }
         }
     }
 }
