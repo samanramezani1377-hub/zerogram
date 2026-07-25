@@ -45,11 +45,13 @@ class ConnectionRequestUseCase @Inject constructor(
         // Check if we're blocked by the peer… can't check directly,
         // but if they blocked us, they won't respond.
 
+        val myIp = getMyIp()
+
         val request = ConnectionRequest(
             id = UUID.randomUUID().toString().take(12),
             senderFingerprint = cryptoEngine.getLocalFingerprint(),
             senderDisplayName = displayName,
-            senderIp = getMyIp(),
+            senderIp = myIp,
             senderPort = 44231,
             pin = pin,
             status = RequestStatus.PENDING,
@@ -171,7 +173,7 @@ class ConnectionRequestUseCase @Inject constructor(
         blockedRepo.unblockPeer(fingerprint)
     }
 
-    private fun getMyIp(): String {
+    private suspend fun getMyIp(): String {
         return try {
             lanTransport.getLocalAddresses().firstOrNull() ?: ""
         } catch (_: Exception) { "" }
