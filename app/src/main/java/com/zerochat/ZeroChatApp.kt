@@ -36,17 +36,16 @@ class ZeroChatApp : Application() {
     override fun onCreate() {
         super.onCreate()
 
-        // Safe debug check — uses a try-catch because ProGuard/R8 may
-        // optimize BuildConfig.DEBUG away in release builds.
-        val isDebug = runCatching { BuildConfig.DEBUG }.getOrDefault(false)
-
-        if (isDebug) {
-            Timber.plant(Timber.DebugTree())
+        // Global crash handler — prevents app from instantly dying
+        val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            Timber.e(throwable, "Uncaught exception in thread ${thread.name}")
+            defaultHandler?.uncaughtException(thread, throwable)
         }
 
-        val versionName = runCatching { BuildConfig.VERSION_NAME }
-            .getOrDefault("0.1.0")
-
+        val isDebug = runCatching { BuildConfig.DEBUG }.getOrDefault(false)
+        if (isDebug) { Timber.plant(Timber.DebugTree()) }
+        val versionName = runCatching { BuildConfig.VERSION_NAME }.getOrDefault("0.1.0")
         Timber.i("ZeroGram v$versionName starting up")
 
         appScope.launch {
