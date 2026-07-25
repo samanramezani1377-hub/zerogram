@@ -55,13 +55,17 @@ fun ChatScreen(
         }
     }
 
+    // ── KEY FIX: consumeWindowInsets = false so that the Scaffold
+    //    lets WindowInsets.ime reach the content layers.
+    //    The bottomBar naturally sits above the keyboard.
+    //    The LazyColumn content uses imePadding() so it doesn't
+    //    get pushed above the keyboard either.
+    // ────────────────────────────────────────────────────────────
     Scaffold(
-        modifier = Modifier.navigationBarsPadding(),
         topBar = {
             TopAppBar(
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        // Peer profile picture in chat header
                         ProfileImage(
                             imagePath = uiState.peerProfileImagePath,
                             size = 36.dp,
@@ -96,7 +100,7 @@ fun ChatScreen(
         },
         bottomBar = {
             Column {
-                // Error banner
+                // Error banner — above the input bar
                 AnimatedVisibility(
                     visible = uiState.error != null,
                     enter = fadeIn(),
@@ -138,15 +142,16 @@ fun ChatScreen(
                     }
                 }
 
-                // Input bar
+                // Input bar — sits directly above the keyboard
                 Surface(
                     shadowElevation = 8.dp,
+                    color = MaterialTheme.colorScheme.surface,
                 ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 8.dp, vertical = 8.dp)
-                            .imePadding(),
+                            .navigationBarsPadding()
+                            .padding(horizontal = 8.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         IconButton(onClick = { filePickerLauncher.launch("*/*") }) {
@@ -185,7 +190,10 @@ fun ChatScreen(
                     }
                 }
             }
-        }
+        },
+        // IMPORTANT: Do NOT consume window insets at Scaffold level.
+        // Let the bottomBar handle navigation bars, and let the
+        // LazyColumn use imePadding() so content stays below topBar.
     ) { paddingValues ->
         when {
             uiState.isLoading -> {
@@ -207,7 +215,6 @@ fun ChatScreen(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
                 ) {
-                    // Show peer's profile picture large in empty state
                     ProfileImage(
                         imagePath = uiState.peerProfileImagePath,
                         size = 80.dp,
@@ -231,7 +238,11 @@ fun ChatScreen(
                 LazyColumn(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(paddingValues),
+                        .padding(paddingValues)
+                        // Keep content above input bar when keyboard is hidden,
+                        // but let keyboard push content up naturally.
+                        .consumeWindowInsets(paddingValues)
+                        .imePadding(),
                     state = listState,
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
                 ) {
