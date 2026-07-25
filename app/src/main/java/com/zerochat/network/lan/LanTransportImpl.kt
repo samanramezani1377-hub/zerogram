@@ -328,20 +328,22 @@ class LanTransportImpl @Inject constructor(
                 socket.tcpNoDelay = true
                 socket.connect(InetSocketAddress(ipAddress, port), 3000)
 
+                // Send our fingerprint
                 sendFingerprint(socket)
-                socket.soTimeout = 3000  // Short timeout for reading server response
+
+                // Read remote fingerprint response
+                socket.soTimeout = 3000
                 val input = socket.getInputStream()
                 val fpBuf = readExact(input, FINGERPRINT_LEN)
-                socket.soTimeout = SOCKET_TIMEOUT_MS  // Restore normal timeout
+                socket.soTimeout = SOCKET_TIMEOUT_MS
 
-                val remoteFingerprint = if (fpBuf != null) {
+                val remoteFp = if (fpBuf != null) {
                     String(fpBuf, Charsets.UTF_8).trimEnd('0')
                 } else {
-                    Timber.w("No fingerprint response from $ipAddress:$port")
-                    ipAddress  // Fallback to IP
+                    ipAddress
                 }
 
-                Timber.i("✓ Connected to $ipAddress:$port — remote fp: $remoteFingerprint")
+                Timber.i("Connected to $ipAddress:$port — remote: $remoteFp")
 
                 _connectionState.value = LanConnectionState.CONNECTED
                 activeSockets[key] = socket
@@ -350,7 +352,7 @@ class LanTransportImpl @Inject constructor(
                     readFromConnectedSocket(socket, key, ipAddress)
                 }
 
-                remoteFingerprint
+                remoteFp
             } catch (e: Exception) {
                 Timber.w(e, "Failed to connect to $ipAddress:$port")
                 null
@@ -358,7 +360,7 @@ class LanTransportImpl @Inject constructor(
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════════
     // DATA TRANSFER
     // ═══════════════════════════════════════════════════════════════
 

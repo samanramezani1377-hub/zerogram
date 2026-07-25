@@ -138,7 +138,7 @@ class TransportRouterImpl @Inject constructor(
     override suspend fun connectLan(ipAddress: String, port: Int, peerFingerprint: String): String {
         val actualFingerprint = lanTransport.connectDirect(ipAddress, port)
             ?: throw RuntimeException(
-                "Can$'t reach $peerFingerprint at $ipAddress:$port.\n\n" +
+                "Can't reach $peerFingerprint at $ipAddress:$port.\n\n" +
                 "Make sure both devices are on the same WiFi and ZeroGram is open."
             )
 
