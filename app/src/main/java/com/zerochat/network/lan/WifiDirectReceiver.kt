@@ -18,8 +18,9 @@ import javax.inject.Singleton
  *          WIFI_P2P_CONNECTION_CHANGE, WIFI_P2P_THIS_DEVICE_CHANGED
  */
 @Singleton
+@Suppress("unused")
 class WifiDirectReceiver @Inject constructor(
-    @ApplicationContext private val context: Context,
+    @field:ApplicationContext private val context: Context,
 ) : BroadcastReceiver() {
 
     private var manager: WifiP2pManager? = null
@@ -43,34 +44,40 @@ class WifiDirectReceiver @Inject constructor(
                     WifiP2pManager.WIFI_P2P_STATE_DISABLED
                 )
                 val enabled = state == WifiP2pManager.WIFI_P2P_STATE_ENABLED
-                Timber.d("WiFi Direct state changed: enabled=$enabled")
+                Timber.d("Wi-Fi Direct state changed: enabled=$enabled")
                 onStateChanged?.invoke(enabled)
             }
 
             WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION -> {
-                Timber.d("WiFi Direct peers changed")
-                manager?.requestPeers(channel) { peers ->
-                    Timber.d("Peers list: ${peers?.deviceList?.size ?: 0} devices")
-                    onPeersChanged?.invoke()
+                Timber.d("Wi-Fi Direct peers changed")
+                try {
+                    manager?.requestPeers(channel) { peers ->
+                        Timber.d("Peers list: ${peers?.deviceList?.size ?: 0} devices")
+                        onPeersChanged?.invoke()
+                    }
+                } catch (_: SecurityException) {
+                    Timber.w("Missing permission for Wi-Fi Direct peer request")
                 }
             }
 
             WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
-                Timber.d("WiFi Direct connection changed")
-                val networkInfo = intent.getParcelableExtra<android.net.NetworkInfo>(
+                Timber.d("Wi-Fi Direct connection changed")
+                @Suppress("DEPRECATION")
+                val networkInfo: android.net.NetworkInfo? = intent.getParcelableExtra(
                     WifiP2pManager.EXTRA_NETWORK_INFO
                 )
-                val isConnected = networkInfo?.isConnected ?: false
+                val isConnected = networkInfo?.isConnected == true
                 onConnectionChanged?.invoke(isConnected)
             }
 
             WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION -> {
-                Timber.d("WiFi Direct this device changed")
+                Timber.d("Wi-Fi Direct this device changed")
             }
         }
     }
 
     companion object {
+        @Suppress("unused")
         fun createIntentFilter(): IntentFilter = IntentFilter().apply {
             addAction(WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION)
             addAction(WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION)
