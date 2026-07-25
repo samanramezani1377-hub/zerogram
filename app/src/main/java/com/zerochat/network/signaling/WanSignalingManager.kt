@@ -28,7 +28,7 @@ class WanSignalingManager @Inject constructor(
 ) {
 
     companion object {
-        private const val SIGNALING_SERVER_URL = "wss://zerogram-signaling.onrender.com"
+        private const val SIGNALING_SERVER_URL = "wss://zerogram.onrender.com"
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
