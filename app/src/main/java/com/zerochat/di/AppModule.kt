@@ -38,7 +38,9 @@ object AppModule {
     fun provideDatabase(@ApplicationContext context: Context): ZeroChatDatabase =
         androidx.room.Room.databaseBuilder(
             context, ZeroChatDatabase::class.java, ZeroChatDatabase.DATABASE_NAME
-        ).build()
+        )
+            .fallbackToDestructiveMigration()
+            .build()
 
     @Provides fun provideMessageDao(db: ZeroChatDatabase): MessageDao = db.messageDao()
     @Provides fun providePeerDao(db: ZeroChatDatabase): PeerDao = db.peerDao()
