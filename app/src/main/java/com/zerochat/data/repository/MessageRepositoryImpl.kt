@@ -37,6 +37,14 @@ class MessageRepositoryImpl @Inject constructor(
         messageDao.markConversationRead(conversationId)
     }
 
+    override suspend fun deleteMessage(messageId: String) {
+        messageDao.deleteMessage(messageId)
+    }
+
+    override suspend fun deleteConversation(conversationId: String) {
+        messageDao.deleteConversation(conversationId)
+    }
+
     override suspend fun getFailedMessages(): List<Message> {
         return messageDao.getMessagesWithStatus(MessageStatus.FAILED)
     }
