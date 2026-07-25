@@ -175,7 +175,7 @@ private fun ScanTab(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        "Make sure WiFi is on "Make sure WiFi is enabled on both devices" both devices are connected to the same network",
+"Make sure WiFi is enabled on both devices",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -202,7 +202,7 @@ private fun ScanTab(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        "Make sure WiFi is on "Make sure WiFi is enabled on both devices" both devices are connected to the same network",
+"Make sure WiFi is enabled on both devices",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
