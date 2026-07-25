@@ -113,7 +113,8 @@ class IncomingMessageHandler @Inject constructor(
 
             // Check if this is a connection request (JSON with type=connection_request)
             val payloadStr = String(payload, Charsets.UTF_8)
-            if (payloadStr.startsWith("{"type":"connection_request"")) {
+            val connectionRequestPrefix = "{\"type\":\"connection_request\""
+            if (payloadStr.startsWith(connectionRequestPrefix)) {
                 handleConnectionRequest(payloadStr, peerFingerprint)
                 return
             }
