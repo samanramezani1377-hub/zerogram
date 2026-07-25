@@ -95,7 +95,8 @@ object AppModule {
     fun provideTransportRouter(
         lanTransport: LanTransport,
         wanTransport: WanTransport,
-    ): TransportRouter = TransportRouterImpl(lanTransport, wanTransport)
+        peerRepository: PeerRepository,
+    ): TransportRouter = TransportRouterImpl(lanTransport, wanTransport, peerRepository)
 
     @Provides @Singleton
     fun provideSessionManager(
