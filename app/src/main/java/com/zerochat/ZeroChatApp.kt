@@ -47,7 +47,7 @@ class ZeroChatApp : Application() {
         val versionName = runCatching { BuildConfig.VERSION_NAME }
             .getOrDefault("0.1.0")
 
-        Timber.i("ZeroChat v$versionName starting up")
+        Timber.i("ZeroGram v$versionName starting up")
 
         appScope.launch {
             try {

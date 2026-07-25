@@ -30,7 +30,7 @@ fun ContactsScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("ZeroChat") },
+                title = { Text("ZeroGram") },
                 actions = {
                     IconButton(onClick = onNavigateToDiscovery) {
                         Icon(Icons.Default.PersonAdd, contentDescription = "Add peer")

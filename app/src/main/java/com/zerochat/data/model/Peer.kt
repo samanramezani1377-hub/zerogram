@@ -8,7 +8,7 @@ import androidx.room.PrimaryKey
 /**
  * Room entity representing a known peer (contact / discovered device).
  *
- * In ZeroChat there are no accounts — identity is a cryptographic key pair.
+ * In ZeroGram there are no accounts — identity is a cryptographic key pair.
  * A Peer is any device we've exchanged identity keys with.
  *
  * Profile image fields store the peer's profile picture metadata so

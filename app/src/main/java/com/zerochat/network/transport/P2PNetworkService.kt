@@ -86,7 +86,7 @@ class P2PNetworkService : Service() {
     private fun createNotificationChannel() {
         val channel = NotificationChannel(
             CHANNEL_ID,
-            "ZeroChat P2P Service",
+            "ZeroGram P2P Service",
             NotificationManager.IMPORTANCE_LOW,
         ).apply {
             description = "Keeps peer-to-peer connections alive"

@@ -389,7 +389,7 @@ class LanTransportImpl @Inject constructor(
                     MDNS_SERVICE_TYPE,
                     serviceName,
                     DEFAULT_PORT,
-                    "ZeroChat PIN:$pin",
+                    "ZeroGram PIN:$pin",
                 )
                 jmdns?.registerService(serviceInfo)
                 Timber.i("PIN $pin advertised via mDNS as '$serviceName'")

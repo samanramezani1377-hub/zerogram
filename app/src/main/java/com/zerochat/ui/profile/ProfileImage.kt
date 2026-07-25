@@ -39,7 +39,7 @@ import java.io.File
  * - Coil disk caching
  *
  * Usage:
- *   ProfileImage(imagePath = "/data/data/zerochat/profile/abc.webp", size = 64.dp)
+ *   ProfileImage(imagePath = "/data/data/zerogram/profile/abc.webp", size = 64.dp)
  *   ProfileImage(imagePath = null, size = 48.dp) // shows default avatar
  *   ProfileImage(imagePath = path, size = 96.dp, onClick = { showPreview() })
  */

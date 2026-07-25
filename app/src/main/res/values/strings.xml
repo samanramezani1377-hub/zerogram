@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">ZeroChat</string>
+    <string name="app_name">ZeroGram</string>
     <string name="contacts">Contacts</string>
     <string name="discover">Discover</string>
     <string name="chat">Chat</string>
@@ -12,6 +12,6 @@
     <string name="my_id">My ID</string>
     <string name="add_peer">Add Peer</string>
     <string name="enter_peer_id">Enter Peer ID or IP Address</string>
-    <string name="p2p_service_notification">ZeroChat P2P Service</string>
+    <string name="p2p_service_notification">ZeroGram P2P Service</string>
     <string name="p2p_service_running">Listening for peer connections</string>
 </resources>

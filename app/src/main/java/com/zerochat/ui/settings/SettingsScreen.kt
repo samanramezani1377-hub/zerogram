@@ -175,7 +175,7 @@ fun SettingsScreen(
 
             // App version
             Text(
-                text = "ZeroChat v${BuildConfig.VERSION_NAME}",
+                text = "ZeroGram v${BuildConfig.VERSION_NAME}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(16.dp),

@@ -17,7 +17,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Processes profile images for ZeroChat.
+ * Processes profile images for ZeroGram.
  *
  * Handles:
  * - Resizing to max 1024×1024
