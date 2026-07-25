@@ -59,12 +59,14 @@ object AppModule {
     ): ProfileImageRepository = ProfileImageRepositoryImpl(userProfileDao, peerDao)
 
     @Provides @Singleton
-    fun provideProfileImageProcessor(@ApplicationContext context: Context): ProfileImageProcessor =
-        ProfileImageProcessor(context)
+    fun provideProfileImageProcessor(
+        @ApplicationContext context: Context,
+    ): ProfileImageProcessor = ProfileImageProcessor(context)
 
     @Provides @Singleton
-    fun provideProfileImageStorage(@ApplicationContext context: Context): ProfileImageStorage =
-        ProfileImageStorage(context)
+    fun provideProfileImageStorage(
+        @ApplicationContext context: Context,
+    ): ProfileImageStorage = ProfileImageStorage(context)
 
     @Provides @Singleton
     fun provideProfileImageUseCase(
@@ -122,5 +124,9 @@ object AppModule {
     fun provideProfileSyncHandler(
         transportRouter: TransportRouter,
         profileRepository: ProfileImageRepository,
-    ): ProfileSyncHandler = ProfileSyncHandler(transportRouter, profileRepository)
+        imageStorage: ProfileImageStorage,
+        imageProcessor: ProfileImageProcessor,
+    ): ProfileSyncHandler = ProfileSyncHandler(
+        transportRouter, profileRepository, imageStorage, imageProcessor
+    )
 }
