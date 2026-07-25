@@ -28,6 +28,7 @@ import com.zerochat.data.repository.ConnectionRequestRepositoryImpl
 import com.zerochat.data.repository.BlockedPeerRepositoryImpl
 import com.zerochat.network.wan.WanTransport
 import com.zerochat.network.wan.WebRtcTransport
+import com.zerochat.ui.discovery.DiscoveryViewModel
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
