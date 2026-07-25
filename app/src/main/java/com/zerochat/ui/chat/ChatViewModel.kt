@@ -27,7 +27,6 @@ data class ChatUiState(
     val isConnected: Boolean = false,
     val isLoading: Boolean = true,
     val error: String? = null,
-    // ── Peer Profile ────────────────────────────────────────────
     val peerProfileImagePath: String? = null,
 )
 
@@ -46,6 +45,7 @@ class ChatViewModel @Inject constructor(
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
     private var peerFingerprint: String = ""
+    private var localFingerprint: String = ""
     private var messageCollectionJob: Job? = null
     private var peerFlowJob: Job? = null
 
@@ -57,26 +57,35 @@ class ChatViewModel @Inject constructor(
         }
 
         this.peerFingerprint = peerFingerprint
+        this.localFingerprint = cryptoEngine.getLocalFingerprint()
 
-        // Cancel previous collection
         messageCollectionJob?.cancel()
         peerFlowJob?.cancel()
 
-        // Ensure a session exists
         viewModelScope.launch {
             sessionManager.getOrCreateSession(peerFingerprint)
+        }
+
+        viewModelScope.launch {
+            incomingMessageHandler.startListening()
         }
 
         // Reactive message collection
         messageCollectionJob = viewModelScope.launch {
             try {
                 messageRepository.getMessages(peerFingerprint).collect { messages ->
+                    val relevant = messages.filter { msg ->
+                        msg.conversationId == peerFingerprint ||
+                        msg.senderFingerprint == peerFingerprint
+                    }.sortedBy { it.timestamp }
+
                     _uiState.update {
                         it.copy(
-                            messages = messages,
+                            messages = relevant,
                             isLoading = false,
-                            peerName = formatPeerName(peerFingerprint),
+                            peerName = resolvePeerName(),
                             transportMode = transportRouter.currentMode(peerFingerprint),
+                            isConnected = transportRouter.currentMode(peerFingerprint) != TransportMode.UNKNOWN,
                         )
                     }
                 }
@@ -88,13 +97,11 @@ class ChatViewModel @Inject constructor(
             }
         }
 
-        // Observe peer's profile picture
         peerFlowJob = viewModelScope.launch {
             peerRepository.getPeerFlow(peerFingerprint).collect { peer ->
                 _uiState.update {
                     it.copy(
                         peerProfileImagePath = peer?.profileImagePath,
-                        // Update peer name from stored display name
                         peerName = peer?.displayName?.ifBlank { null }
                             ?: formatPeerName(peerFingerprint),
                     )
@@ -102,16 +109,14 @@ class ChatViewModel @Inject constructor(
             }
         }
 
-        // Start incoming message processing
-        viewModelScope.launch {
-            incomingMessageHandler.startListening()
-        }
-
-        // Observe transport mode
         viewModelScope.launch {
             try {
+                val mode = transportRouter.currentMode(peerFingerprint)
                 _uiState.update {
-                    it.copy(transportMode = transportRouter.currentMode(peerFingerprint))
+                    it.copy(
+                        transportMode = mode,
+                        isConnected = mode != TransportMode.UNKNOWN,
+                    )
                 }
             } catch (_: Exception) {}
         }
@@ -128,7 +133,6 @@ class ChatViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
-                val localFingerprint = cryptoEngine.getLocalFingerprint()
                 val message = Message(
                     id = Message.createId(localFingerprint),
                     conversationId = peerFingerprint,
@@ -149,7 +153,7 @@ class ChatViewModel @Inject constructor(
                 when (result.status) {
                     MessageStatus.FAILED -> {
                         _uiState.update {
-                            it.copy(error = "Not connected. Go to Find Peers → tap Connect on their name, then try again.")
+                            it.copy(error = "Not connected. Connect first, then try again.")
                         }
                     }
                     MessageStatus.SENT -> {
@@ -159,7 +163,7 @@ class ChatViewModel @Inject constructor(
                 }
             } catch (e: Exception) {
                 Timber.e(e, "Error sending message to $peerFingerprint")
-                _uiState.update { it.copy(error = "Failed to send: ${e.message}") }
+                _uiState.update { it.copy(error = "Failed to send: " + (e.message ?: "unknown")) }
             }
         }
     }
@@ -169,7 +173,7 @@ class ChatViewModel @Inject constructor(
             try {
                 val failedMessage = _uiState.value.messages.find { it.id == messageId }
                 if (failedMessage == null) {
-                    Timber.w("Cannot retry — message $messageId not found")
+                    Timber.w("Cannot retry - message $messageId not found")
                     return@launch
                 }
 
@@ -183,29 +187,27 @@ class ChatViewModel @Inject constructor(
                 _uiState.update {
                     it.copy(
                         error = when (result.status) {
-                            MessageStatus.FAILED -> "Retry failed — tap to retry"
+                            MessageStatus.FAILED -> "Retry failed - tap to retry"
                             else -> null
                         },
                     )
                 }
             } catch (e: Exception) {
                 Timber.e(e, "Retry failed for message $messageId")
-                _uiState.update { it.copy(error = "Retry failed: ${e.message}") }
+                _uiState.update { it.copy(error = "Retry failed: " + (e.message ?: "unknown")) }
             }
         }
     }
 
     fun sendMedia(uriString: String) {
         if (peerFingerprint.isBlank()) return
-
         viewModelScope.launch {
             try {
                 val fileName = uriString.substringAfterLast("/")
-                val displayText = "\uD83D\uDCCE $fileName"
-                sendMessage(displayText)
+                sendMessage("\uD83D\uDCCE $fileName")
             } catch (e: Exception) {
                 _uiState.update {
-                    it.copy(error = "Failed to send media: ${e.message}")
+                    it.copy(error = "Failed to send media: " + (e.message ?: "unknown"))
                 }
             }
         }
@@ -221,9 +223,15 @@ class ChatViewModel @Inject constructor(
         peerFlowJob?.cancel()
     }
 
+    private fun resolvePeerName(): String {
+        return _uiState.value.peerName.let {
+            if (it == "Unknown") formatPeerName(peerFingerprint) else it
+        }
+    }
+
     private fun formatPeerName(fingerprint: String): String {
         return if (fingerprint.length >= 12) {
-            "${fingerprint.take(8)}…${fingerprint.takeLast(4)}"
+            fingerprint.take(8) + "..." + fingerprint.takeLast(4)
         } else {
             fingerprint
         }
