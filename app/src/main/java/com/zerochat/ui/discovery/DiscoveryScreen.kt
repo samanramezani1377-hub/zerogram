@@ -101,6 +101,7 @@ fun DiscoveryScreen(
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             text = uiState.error ?: "",
+                            maxLines = 5,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onErrorContainer,
                             modifier = Modifier.weight(1f),
@@ -174,7 +175,7 @@ private fun ScanTab(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        "Make sure WiFi is enabled on both devices",
+                        "Make sure WiFi is on "Make sure WiFi is enabled on both devices" both devices are connected to the same network",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -201,7 +202,7 @@ private fun ScanTab(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        "Make sure WiFi is enabled on both devices",
+                        "Make sure WiFi is on "Make sure WiFi is enabled on both devices" both devices are connected to the same network",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

@@ -1,7 +1,6 @@
 package com.zerochat.network.transport
 
 import com.zerochat.data.model.TransportMode
-import com.zerochat.network.lan.LanConnectionState
 import com.zerochat.network.lan.LanIncoming
 import com.zerochat.network.lan.LanTransport
 import com.zerochat.network.lan.LanTransportImpl
@@ -45,6 +44,7 @@ class TransportRouterImpl @Inject constructor(
         wanTransport.configureIceServers(DefaultIceServers.ALL)
         lanTransport.startListening()
 
+        // LAN incoming
         scope.launch {
             lanTransport.incomingData().collect { incoming ->
                 val fingerprint = resolveLanFingerprint(incoming)
@@ -55,6 +55,7 @@ class TransportRouterImpl @Inject constructor(
             }
         }
 
+        // WAN incoming
         scope.launch {
             (wanTransport as? com.zerochat.network.wan.WebRtcTransport)
                 ?.incomingTaggedData()
@@ -65,12 +66,13 @@ class TransportRouterImpl @Inject constructor(
                     )
                 }
                 ?: wanTransport.incomingData().collect { data ->
-                    val fingerprint = peerRoutes.entries
+                    val fp = peerRoutes.entries
                         .firstOrNull { it.value.transportMode == TransportMode.WAN }?.key ?: "wan_peer"
-                    _incomingMessages.send(IncomingTransportMessage(fingerprint, data, TransportMode.WAN))
+                    _incomingMessages.send(IncomingTransportMessage(fp, data, TransportMode.WAN))
                 }
         }
 
+        // Discovery → merged peers
         scope.launch {
             lanTransport.discoveredPeers().collect { lanPeers ->
                 _discoveredPeers.value = lanPeers.map { peer ->
@@ -81,7 +83,7 @@ class TransportRouterImpl @Inject constructor(
 
         lanTransport.startWiFiDirectDiscovery()
         lanTransport.startMdnsDiscovery()
-        Timber.i("TransportRouter started")
+        Timber.i("TransportRouter started — dual-channel discovery active")
     }
 
     override suspend fun stop() {
@@ -90,21 +92,22 @@ class TransportRouterImpl @Inject constructor(
         lanTransport.stopWiFiDirectDiscovery()
         lanTransport.stopMdnsDiscovery()
         wanTransport.close()
-        Timber.i("TransportRouter stopped")
     }
 
     override suspend fun send(peerFingerprint: String, encryptedPayload: ByteArray) {
         val route = peerRoutes[peerFingerprint]
-            ?: throw IllegalStateException(
-                "Not connected to $peerFingerprint. Return to Find Peers and tap Connect on their name."
+        if (route == null) {
+            throw IllegalStateException(
+                "No route for $peerFingerprint. Connect first via Find Peers."
             )
+        }
 
         when (route.transportMode) {
             TransportMode.LAN -> {
                 val (ip, port) = route.lanEndpoint
-                    ?: throw IllegalStateException("No LAN endpoint for $peerFingerprint")
+                    ?: throw IllegalStateException("No LAN address for $peerFingerprint")
                 lanTransport.sendDataTo(encryptedPayload, ip, port)
-                Timber.d("Sent to $peerFingerprint ($ip:$port, ${encryptedPayload.size}B)")
+                Timber.d("→ Sent to $peerFingerprint ($ip:$port, ${encryptedPayload.size}B)")
             }
 
             TransportMode.WAN -> {
@@ -115,13 +118,10 @@ class TransportRouterImpl @Inject constructor(
                 } else {
                     wanTransport.sendData(encryptedPayload)
                 }
-                Timber.d("Sent via WAN to $peerFingerprint")
             }
 
             TransportMode.UNKNOWN ->
-                throw IllegalStateException(
-                    "Not connected to $peerFingerprint"
-                )
+                throw IllegalStateException("Not connected to $peerFingerprint")
         }
     }
 
@@ -132,32 +132,27 @@ class TransportRouterImpl @Inject constructor(
     /**
      * Connect to a peer via LAN.
      *
-     * KEY FIX: First tries the TCP connection with a short timeout.
-     * Only registers the route in the table if connection succeeds.
-     * This prevents the "tap to retry" cycle where users think they're
-     * connected but the socket was never established.
+     * Tries TCP connection first (3s timeout). Only registers the route
+     * on success. The fingerprint is used as the stable peer identifier.
      */
     override suspend fun connectLan(ipAddress: String, port: Int, peerFingerprint: String) {
-        // Try to connect first — this has a 1.5s timeout now
-        val connected = withContext(Dispatchers.IO) {
-            lanTransport.connectDirect(ipAddress, port)
-        }
-
+        val connected = lanTransport.connectDirect(ipAddress, port)
         if (!connected) {
             throw RuntimeException(
-                "Could not connect to $peerFingerprint at $ipAddress:$port. " +
-                        "Make sure both devices are on the same WiFi network and ZeroGram is open."
+                "Can't reach $peerFingerprint at $ipAddress:$port.\n\n" +
+                        "Make sure:\n" +
+                        "• Both devices are on the same WiFi\n" +
+                        "• ZeroGram is open on both devices\n" +
+                        "• The other device shows 'Listening on port $port'"
             )
         }
 
-        // Only register after successful connection
         peerRoutes[peerFingerprint] = PeerRoute(
             fingerprint = peerFingerprint,
             transportMode = TransportMode.LAN,
             lanEndpoint = Pair(ipAddress, port),
         )
-
-        Timber.i("LAN route registered for $peerFingerprint ($ipAddress:$port)")
+        Timber.i("✓ Route registered: $peerFingerprint → $ipAddress:$port [LAN]")
     }
 
     override suspend fun connectWan(peerFingerprint: String): WanConnectionOffer {
@@ -167,11 +162,6 @@ class TransportRouterImpl @Inject constructor(
             transportMode = TransportMode.WAN,
             wanLabel = "offerer",
         )
-        scope.launch {
-            wanTransport.localIceCandidates().collect { candidate ->
-                Timber.d("ICE candidate for $peerFingerprint")
-            }
-        }
         return WanConnectionOffer(peerFingerprint, offerSdp)
     }
 
@@ -186,16 +176,14 @@ class TransportRouterImpl @Inject constructor(
 
     override suspend fun completeWanConnection(peerFingerprint: String, answerSdp: String) {
         wanTransport.setRemoteAnswer(answerSdp)
-        Timber.i("WAN connection completed for $peerFingerprint")
     }
 
     private fun resolveLanFingerprint(incoming: LanIncoming): String {
         val fp = incoming.peerFingerprint
         if (fp.isNotBlank() && fp != "unknown") return fp
-        val existing = peerRoutes.entries.firstOrNull {
-            it.value.lanEndpoint?.first == incoming.senderIp
-        }
-        return existing?.key ?: "lan_${incoming.senderIp}"
+        return peerRoutes.entries
+            .firstOrNull { it.value.lanEndpoint?.first == incoming.senderIp }?.key
+            ?: "lan_${incoming.senderIp}"
     }
 
     private fun resolveWanFingerprint(peerLabel: String): String {
@@ -210,6 +198,7 @@ class TransportRouterImpl @Inject constructor(
                 transportMode = TransportMode.LAN,
                 lanEndpoint = Pair(senderIp, LanTransportImpl.DEFAULT_PORT),
             )
+            Timber.i("✓ Auto-route registered for incoming $fingerprint @ $senderIp")
         }
     }
 }

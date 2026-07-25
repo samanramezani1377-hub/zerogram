@@ -149,7 +149,7 @@ class ChatViewModel @Inject constructor(
                 when (result.status) {
                     MessageStatus.FAILED -> {
                         _uiState.update {
-                            it.copy(error = "Message failed to send — tap to retry")
+                            it.copy(error = "Not connected. Go to Find Peers → tap Connect on their name, then try again.")
                         }
                     }
                     MessageStatus.SENT -> {

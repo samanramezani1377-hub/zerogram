@@ -22,19 +22,18 @@ import javax.inject.Singleton
 /**
  * LAN transport using TCP sockets with length-prefixed framing.
  *
- * Protocol (v2):
+ * Discovery uses BOTH WiFi Direct AND mDNS simultaneously.
+ * Every device registers its presence via mDNS AND scans via WiFi Direct.
+ * This ensures maximum discovery probability across different devices/routers.
+ *
+ * Protocol (v3):
  * ┌────────────────┬─────────────────────┬──────────────────────┐
  * │ Fingerprint    │ Payload Length       │ Payload               │
  * │ (64 bytes)     │ (4 bytes, big-endian)│ (variable)            │
  * └────────────────┴─────────────────────┴──────────────────────┘
  *
- * Key improvements over the previous version:
- * - Length-prefixed framing prevents partial/corrupt reads and message
- *   boundary ambiguity.
- * - Socket timeout (30s idle) detects zombie connections.
- * - Proper WiFi Direct group owner connection logic.
- * - Thread-safe peer lists with atomic state updates.
- * - Structured concurrency: each connection runs in its own child scope.
+ * Handshake: both sides send their fingerprint, but client sends FIRST,
+ * server responds. Client reads server's fingerprint after sending its own.
  */
 @Singleton
 class LanTransportImpl @Inject constructor(
@@ -44,12 +43,13 @@ class LanTransportImpl @Inject constructor(
 
     companion object {
         const val DEFAULT_PORT = 44231
-        private const val MDNS_SERVICE_TYPE = "_zerochat._tcp.local."
+        private const val MDNS_SERVICE_TYPE = "_zerogram._tcp.local."
         const val FINGERPRINT_LEN = 64
         private const val LENGTH_FIELD_SIZE = 4
         private const val MAX_PAYLOAD_SIZE = 1_048_576 // 1 MB
-        private const val SOCKET_TIMEOUT_MS = 5_000   // 30 seconds
-        private const val HEARTBEAT_INTERVAL_MS = 15_000 // 15 seconds
+        private const val SOCKET_TIMEOUT_MS = 10_000
+        private const val HEARTBEAT_INTERVAL_MS = 30_000L
+        private const val MDNS_PREFIX = "ZG-"
     }
 
     // ── Server ─────────────────────────────────────────────────────
@@ -61,10 +61,7 @@ class LanTransportImpl @Inject constructor(
 
     // ── Active connections ─────────────────────────────────────────
 
-    /**
-     * Map of "ip:port" → active client socket.
-     * Server-side connections are tracked separately by fingerprint.
-     */
+    /** "ip:port" → active client socket (outgoing connections we made) */
     private val activeSockets = ConcurrentHashMap<String, Socket>()
 
     // ── Data channels ──────────────────────────────────────────────
@@ -106,33 +103,29 @@ class LanTransportImpl @Inject constructor(
         }
         try {
             serverSocket = ServerSocket(DEFAULT_PORT)
-            // Set accept timeout so the loop can be cancelled
             serverSocket?.soTimeout = 1000
+            serverSocket?.reuseAddress = true
             _connectionState.value = LanConnectionState.CONNECTED
-            Timber.i("LAN server listening on port $DEFAULT_PORT")
+            Timber.i("TCP server listening on 0.0.0.0:$DEFAULT_PORT")
 
             serverScope.launch {
                 while (isActive) {
                     try {
                         val clientSocket = serverSocket!!.accept()
                         val remoteAddr = "${clientSocket.inetAddress.hostAddress}:${clientSocket.port}"
-                        Timber.d("New LAN connection from $remoteAddr")
-
-                        // Each connection runs in its own child scope for structured concurrency
-                        launch {
-                            handleIncomingConnection(clientSocket, remoteAddr)
-                        }
+                        Timber.i("✓ TCP connection from $remoteAddr")
+                        launch { handleIncomingConnection(clientSocket, remoteAddr) }
                     } catch (_: SocketTimeoutException) {
-                        // Timeout on accept() — loop back to check isActive
+                        // timeout — loop
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
-                        if (isActive) Timber.w(e, "Error accepting LAN connection")
+                        if (isActive) Timber.w(e, "TCP accept error")
                     }
                 }
             }
         } catch (e: Exception) {
-            Timber.e(e, "Failed to start LAN server")
+            Timber.e(e, "Failed to start TCP server")
             _connectionState.value = LanConnectionState.DISCONNECTED
         }
     }
@@ -141,38 +134,38 @@ class LanTransportImpl @Inject constructor(
         serverJob.cancel()
         activeSockets.values.forEach { runCatching { it.close() } }
         activeSockets.clear()
-        // Close server socket synchronously (cancelled scope handles the loop)
         runCatching { serverSocket?.close() }
         serverSocket = null
         _connectionState.value = LanConnectionState.DISCONNECTED
-        Timber.i("LAN server stopped")
+        Timber.i("TCP server stopped")
     }
 
     override fun setLocalFingerprint(fingerprint: String) {
         localFingerprint = fingerprint
     }
 
-    // ── Discovery ──────────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════
+    // DISCOVERY — WiFi Direct + mDNS (dual-channel)
+    // ═══════════════════════════════════════════════════════════════
 
     override fun startWiFiDirectDiscovery() {
-        wifiP2pManager =
-            context.getSystemService(Context.WIFI_P2P_SERVICE) as? WifiP2pManager
-                ?: run {
-                    Timber.w("WiFi Direct not available on this device")
-                    return
-                }
-        wifiP2pChannel =
-            wifiP2pManager!!.initialize(context, context.mainLooper, null)
+        wifiP2pManager = context.getSystemService(Context.WIFI_P2P_SERVICE) as? WifiP2pManager
+        if (wifiP2pManager == null) {
+            Timber.w("WiFi Direct not available")
+            return
+        }
+        wifiP2pChannel = wifiP2pManager!!.initialize(context, context.mainLooper, null)
         wifiDirectReceiver.initialize(wifiP2pManager!!, wifiP2pChannel!!)
 
+        // When peer list changes
         wifiDirectReceiver.onPeersChanged = {
             wifiP2pManager?.requestPeers(wifiP2pChannel) { peerList ->
                 val peers = peerList?.deviceList?.map { device ->
                     LanPeer(
                         deviceId = device.deviceAddress,
-                        ipAddress = "",
+                        ipAddress = "", // WiFi Direct doesn't give IP until connected
                         port = DEFAULT_PORT,
-                        displayName = device.deviceName,
+                        displayName = device.deviceName.ifBlank { device.deviceAddress.take(8) },
                         discoveryMethod = "wifi_direct",
                     )
                 } ?: emptyList()
@@ -185,21 +178,20 @@ class LanTransportImpl @Inject constructor(
             }
         }
 
+        // When WiFi Direct connection is established
         wifiDirectReceiver.onConnectionChanged = { connected ->
             if (connected) {
                 wifiP2pManager?.requestConnectionInfo(wifiP2pChannel) { info ->
-                    // Both group owner and clients should connect to the
-                    // GO's IP. The group owner hosts the TCP server.
                     val goAddress = info.groupOwnerAddress
                     if (goAddress != null) {
                         val ip = goAddress.hostAddress ?: return@requestConnectionInfo
                         serverScope.launch {
                             if (!info.isGroupOwner) {
-                                // Connect to the group owner's server
+                                // We're the client — connect to group owner
+                                Timber.i("WiFi Direct client — connecting to GO at $ip")
                                 connectDirect(ip, DEFAULT_PORT)
                             }
-                            // If we ARE the group owner, the other peer will connect to us.
-                            // Our server is already listening from startListening().
+                            // If we ARE the GO, the client will connect to us
                         }
                     }
                 }
@@ -212,38 +204,55 @@ class LanTransportImpl @Inject constructor(
 
     override fun stopWiFiDirectDiscovery() {
         wifiDirectDiscoveryJob?.cancel()
-        wifiP2pManager?.stopPeerDiscovery(wifiP2pChannel, null)
+        runCatching { wifiP2pManager?.stopPeerDiscovery(wifiP2pChannel, null) }
     }
 
-    /**
-     * Periodically re-discover peers to keep the list fresh.
-     */
     private fun discoverPeersPeriodic() {
         wifiDirectDiscoveryJob?.cancel()
         wifiDirectDiscoveryJob = serverScope.launch {
             while (isActive) {
-                discoverPeers()
-                delay(5_000) // Every 5 seconds
+                runCatching { discoverPeers() }
+                delay(5_000)
             }
         }
     }
+
+    // ── mDNS — register ourselves AND browse for others ────────────
 
     override fun startMdnsDiscovery() {
         mdnsDiscoveryJob?.cancel()
         mdnsDiscoveryJob = serverScope.launch {
             try {
-                val localIp = getLocalAddresses().firstOrNull() ?: return@launch
+                val localIp = getLocalAddresses().firstOrNull()
+                if (localIp == null) {
+                    Timber.w("No local IP — can't start mDNS")
+                    return@launch
+                }
+
+                // Create JmDNS instance bound to our IP
                 jmdns = javax.jmdns.JmDNS.create(InetAddress.getByName(localIp))
                 Timber.i("mDNS started on $localIp")
 
+                // ── ADVERTISE ourselves so others can find us ────────
+                val serviceName = MDNS_PREFIX + localFingerprint.take(16).replace(":", "")
+                val serviceInfo = javax.jmdns.ServiceInfo.create(
+                    MDNS_SERVICE_TYPE,
+                    serviceName,
+                    DEFAULT_PORT,
+                    0, // weight
+                    0, // priority
+                    mapOf("fp" to localFingerprint.take(16))
+                )
+                jmdns?.registerService(serviceInfo)
+                Timber.i("mDNS advertising as '$serviceName' on port $DEFAULT_PORT")
+
+                // ── BROWSE for other devices ────────────────────────
                 jmdns?.addServiceListener(
                     MDNS_SERVICE_TYPE,
                     object : javax.jmdns.ServiceListener {
                         override fun serviceAdded(event: javax.jmdns.ServiceEvent) {
-                            jmdns?.requestServiceInfo(
-                                MDNS_SERVICE_TYPE,
-                                event.name,
-                            )
+                            // Request full info for this service
+                            jmdns?.requestServiceInfo(MDNS_SERVICE_TYPE, event.name)
                         }
 
                         override fun serviceRemoved(event: javax.jmdns.ServiceEvent) {
@@ -251,31 +260,42 @@ class LanTransportImpl @Inject constructor(
                                 mDNSPeers.removeAll { it.deviceId == event.name }
                             }
                             refreshMergedPeers()
+                            Timber.d("mDNS service removed: ${event.name}")
                         }
 
                         override fun serviceResolved(event: javax.jmdns.ServiceEvent) {
-                            val addresses = event.info.inetAddresses
+                            val info = event.info
+                            // Skip our own service
+                            if (event.name.startsWith(MDNS_PREFIX + localFingerprint.take(16).replace(":", ""))) {
+                                return
+                            }
+
+                            val addresses = info.inetAddresses
                             if (addresses.isNotEmpty()) {
                                 val addr = addresses.first()
+                                val ip = addr.hostAddress ?: return
+                                val fp = info.getPropertyString("fp") ?: ""
+
                                 val peer = LanPeer(
-                                    displayName = event.name.removePrefix("ZC-"),
-                                    ipAddress = addr.hostAddress ?: return,
-                                    port = event.info.port,
+                                    displayName = event.name.removePrefix(MDNS_PREFIX),
+                                    ipAddress = ip,
+                                    port = info.port,
                                     discoveryMethod = "mdns",
-                                    deviceId = event.name,
+                                    deviceId = fp.ifBlank { event.name },
                                 )
+
                                 synchronized(this@LanTransportImpl) {
-                                    mDNSPeers.removeAll { it.deviceId == event.name }
+                                    mDNSPeers.removeAll { it.ipAddress == ip }
                                     mDNSPeers.add(peer)
                                 }
                                 refreshMergedPeers()
-                                Timber.i("mDNS peer: ${peer.displayName} @ ${peer.ipAddress}")
+                                Timber.i("mDNS found peer: $fp @ $ip:${info.port}")
                             }
                         }
                     },
                 )
             } catch (e: Exception) {
-                Timber.e(e, "mDNS discovery error")
+                Timber.e(e, "mDNS error")
             }
         }
     }
@@ -289,25 +309,38 @@ class LanTransportImpl @Inject constructor(
         }
     }
 
-    // ── Connection ─────────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════
+    // CONNECTION
+    // ═══════════════════════════════════════════════════════════════
 
     override suspend fun connectDirect(ipAddress: String, port: Int): Boolean {
         return withContext(Dispatchers.IO) {
             try {
+                // Skip if we already have an active socket to this peer
+                val key = "$ipAddress:$port"
+                val existing = activeSockets[key]
+                if (existing != null && existing.isConnected && !existing.isClosed) {
+                    Timber.d("Already connected to $key")
+                    return@withContext true
+                }
+
+                // Remove any dead socket
+                activeSockets.remove(key)
+
                 val socket = Socket()
                 socket.soTimeout = SOCKET_TIMEOUT_MS
-                socket.connect(InetSocketAddress(ipAddress, port), 1500)
+                socket.tcpNoDelay = true
+                socket.connect(InetSocketAddress(ipAddress, port), 3000)
 
-                val key = "$ipAddress:$port"
-                activeSockets[key] = socket
-
-                // Send fingerprint handshake
+                // Send our fingerprint first (client sends first)
                 sendFingerprint(socket)
 
                 _connectionState.value = LanConnectionState.CONNECTED
-                Timber.i("Connected to $ipAddress:$port (handshake sent)")
+                Timber.i("✓ Connected to $ipAddress:$port")
 
-                // Start reading from this socket in the background
+                activeSockets[key] = socket
+
+                // Background reader for incoming messages from this peer
                 serverScope.launch {
                     readFromConnectedSocket(socket, key, ipAddress)
                 }
@@ -320,26 +353,35 @@ class LanTransportImpl @Inject constructor(
         }
     }
 
-    // ── Data Transfer ──────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════
+    // DATA TRANSFER
+    // ═══════════════════════════════════════════════════════════════
 
     override suspend fun sendDataTo(data: ByteArray, ipAddress: String, port: Int) {
         withContext(Dispatchers.IO) {
             val key = "$ipAddress:$port"
-            val existingSocket = activeSockets[key]
+            val socket = activeSockets[key]
 
-            if (existingSocket != null && existingSocket.isConnected && !existingSocket.isClosed) {
-                sendWithFraming(existingSocket, data)
-            } else {
-                // Short-lived connection
-                Socket().use { socket ->
-                    socket.soTimeout = SOCKET_TIMEOUT_MS
-                    socket.connect(InetSocketAddress(ipAddress, port), 1500)
-
-                    // Send fingerprint, then framed data
-                    sendFingerprint(socket)
+            if (socket != null && socket.isConnected && !socket.isClosed) {
+                try {
                     sendWithFraming(socket, data)
+                    Timber.d("Sent ${data.size}B to $key (persistent)")
+                    return@withContext
+                } catch (e: Exception) {
+                    Timber.w(e, "Send on existing socket failed — reconnecting")
+                    activeSockets.remove(key)
+                    runCatching { socket.close() }
                 }
-                Timber.d("Sent ${data.size}B to $ipAddress:$port (short-lived)")
+            }
+
+            // Fallback: create a short-lived connection
+            Socket().use { s ->
+                s.soTimeout = SOCKET_TIMEOUT_MS
+                s.tcpNoDelay = true
+                s.connect(InetSocketAddress(ipAddress, port), 3000)
+                sendFingerprint(s)
+                sendWithFraming(s, data)
+                Timber.d("Sent ${data.size}B to $key (short-lived)")
             }
         }
     }
@@ -349,27 +391,26 @@ class LanTransportImpl @Inject constructor(
             try {
                 NetworkInterface.getNetworkInterfaces()?.toList()?.flatMap { iface ->
                     iface.inetAddresses.toList()
-                        .filter {
-                            !it.isLoopbackAddress &&
-                            it is java.net.Inet4Address
-                        }
+                        .filter { !it.isLoopbackAddress && it is java.net.Inet4Address }
                         .map { it.hostAddress ?: "" }
                         .filter { it.isNotBlank() }
                 } ?: emptyList()
             } catch (e: Exception) {
-                Timber.w(e, "Failed to get local addresses")
+                Timber.w(e, "getLocalAddresses failed")
                 emptyList()
             }
         }
     }
 
-    // ── PIN Code ───────────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════
+    // PIN CODE
+    // ═══════════════════════════════════════════════════════════════
 
     override fun getOrCreatePinCode(): String {
         pinCode?.let { return it }
         val code = String.format("%08d", secureRandom.nextInt(100_000_000))
         pinCode = code
-        Timber.i("PIN code generated: $code")
+        Timber.i("PIN: $code")
         serverScope.launch { advertisePinCode() }
         return code
     }
@@ -383,17 +424,20 @@ class LanTransportImpl @Inject constructor(
                 if (jmdns == null) {
                     jmdns = javax.jmdns.JmDNS.create(InetAddress.getByName(localIp))
                 }
-                val serviceName = "ZC-${pin}-${android.os.Build.MODEL.replace(" ", "-").take(20)}"
+
+                // Register a PIN-specific service name so lookup can find it
+                val pinServiceName = "ZG-PIN-$pin"
                 val serviceInfo = javax.jmdns.ServiceInfo.create(
                     MDNS_SERVICE_TYPE,
-                    serviceName,
+                    pinServiceName,
                     DEFAULT_PORT,
-                    "ZeroGram PIN:$pin",
+                    0, 0,
+                    mapOf("pin" to pin)
                 )
                 jmdns?.registerService(serviceInfo)
-                Timber.i("PIN $pin advertised via mDNS as '$serviceName'")
+                Timber.i("PIN $pin advertised as '$pinServiceName'")
             } catch (e: Exception) {
-                Timber.e(e, "Failed to advertise PIN via mDNS")
+                Timber.e(e, "PIN advertise failed")
                 throw e
             }
         }
@@ -407,109 +451,87 @@ class LanTransportImpl @Inject constructor(
                 if (jmdns == null) {
                     jmdns = javax.jmdns.JmDNS.create(InetAddress.getByName(localIp))
                 }
-                val prefix = "ZC-$pin-"
+
+                // List ALL services of our type
                 val services = jmdns?.list(MDNS_SERVICE_TYPE) ?: emptyArray()
-                Timber.d("PIN lookup '$pin': found ${services.size} mDNS service(s)")
+                Timber.d("PIN lookup: ${services.size} service(s) on network")
+
+                val targetName = "ZG-PIN-$pin"
 
                 for (svc in services) {
-                    if (svc.name.startsWith(prefix)) {
-                        val info = jmdns?.getServiceInfo(
-                            MDNS_SERVICE_TYPE,
-                            svc.name,
-                            3000,
-                        )
+                    Timber.d("  Found service: ${svc.name}")
+                    if (svc.name == targetName || svc.name.contains(pin)) {
+                        // Resolve the service to get IP + port
+                        val info = jmdns?.getServiceInfo(MDNS_SERVICE_TYPE, svc.name, 3000)
                         val addresses = info?.inetAddresses
                         if (addresses != null && addresses.isNotEmpty()) {
                             val addr = addresses.first()
                             val peer = LanPeer(
-                                displayName = svc.name
-                                    .removePrefix("ZC-$pin-")
-                                    .replace("-", " "),
+                                displayName = "PIN:$pin",
                                 ipAddress = addr.hostAddress ?: continue,
                                 port = info.port,
                                 discoveryMethod = "pin",
                                 deviceId = svc.name,
                             )
-                            Timber.i("PIN $pin → ${peer.ipAddress}:${peer.port}")
+                            Timber.i("✓ PIN $pin resolved → ${peer.ipAddress}:${peer.port}")
                             return@withContext peer
                         }
                     }
                 }
-                Timber.w("No device found with PIN $pin")
+                Timber.w("PIN $pin not found (${services.size} services checked)")
                 null
             } catch (e: Exception) {
-                Timber.e(e, "PIN resolution failed")
+                Timber.e(e, "PIN resolve failed")
                 throw e
             }
         }
     }
 
-    // ── Private: Framing Protocol ──────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════
+    // PRIVATE: Framing
+    // ═══════════════════════════════════════════════════════════════
 
-    /**
-     * Send data with a 4-byte big-endian length prefix.
-     *
-     * Format: | length (4 bytes, big-endian) | payload |
-     */
     private fun sendWithFraming(socket: Socket, data: ByteArray) {
-        val lengthBytes = ByteArray(LENGTH_FIELD_SIZE)
-        lengthBytes[0] = ((data.size shr 24) and 0xFF).toByte()
-        lengthBytes[1] = ((data.size shr 16) and 0xFF).toByte()
-        lengthBytes[2] = ((data.size shr 8) and 0xFF).toByte()
-        lengthBytes[3] = (data.size and 0xFF).toByte()
-
+        val len = data.size
+        val header = byteArrayOf(
+            ((len shr 24) and 0xFF).toByte(),
+            ((len shr 16) and 0xFF).toByte(),
+            ((len shr 8) and 0xFF).toByte(),
+            (len and 0xFF).toByte(),
+        )
         val output = socket.getOutputStream()
-        // Write length + payload in one operation to avoid fragmentation
-        val combined = lengthBytes + data
-        output.write(combined)
+        output.write(header + data)
         output.flush()
-        Timber.d("Sent ${data.size}B (framed) to ${socket.inetAddress.hostAddress}")
     }
 
-    /**
-     * Read exactly [n] bytes from the input stream, blocking if needed.
-     * Returns null if EOF is reached before [n] bytes.
-     */
     private fun readExact(input: InputStream, n: Int): ByteArray? {
-        val buffer = ByteArray(n)
-        var offset = 0
-        while (offset < n) {
-            val read = input.read(buffer, offset, n - offset)
-            if (read == -1) return null
-            offset += read
+        val buf = ByteArray(n)
+        var off = 0
+        while (off < n) {
+            val r = input.read(buf, off, n - off)
+            if (r == -1) return null
+            off += r
         }
-        return buffer
+        return buf
     }
 
-    /**
-     * Read a length-prefixed message from a socket.
-     * Returns null on EOF or if the length exceeds MAX_PAYLOAD_SIZE.
-     */
     private fun readFramedMessage(input: InputStream): ByteArray? {
-        // Read 4-byte length prefix
-        val lengthBuf = readExact(input, LENGTH_FIELD_SIZE) ?: return null
-        val length = ((lengthBuf[0].toInt() and 0xFF) shl 24) or
-                ((lengthBuf[1].toInt() and 0xFF) shl 16) or
-                ((lengthBuf[2].toInt() and 0xFF) shl 8) or
-                (lengthBuf[3].toInt() and 0xFF)
-
-        if (length < 0 || length > MAX_PAYLOAD_SIZE) {
-            Timber.w("Invalid payload length: $length — rejecting message")
-            // Drain the claimed bytes to stay in sync
-            input.skip(length.toLong())
+        val header = readExact(input, LENGTH_FIELD_SIZE) ?: return null
+        val len = ((header[0].toInt() and 0xFF) shl 24) or
+                ((header[1].toInt() and 0xFF) shl 16) or
+                ((header[2].toInt() and 0xFF) shl 8) or
+                (header[3].toInt() and 0xFF)
+        if (len < 0 || len > MAX_PAYLOAD_SIZE) {
+            Timber.w("Invalid payload length: $len")
             return null
         }
-
-        // Read payload
-        return readExact(input, length)
+        return readExact(input, len)
     }
 
-    // ── Private: Connection Handling ───────────────────────────────
+    // ═══════════════════════════════════════════════════════════════
+    // PRIVATE: Connection handling
+    // ═══════════════════════════════════════════════════════════════
 
-    /**
-     * Send the local fingerprint to a newly connected socket.
-     * This is the first thing sent after TCP connects.
-     */
     private fun sendFingerprint(socket: Socket) {
         val fp = localFingerprint
             .take(FINGERPRINT_LEN)
@@ -517,113 +539,93 @@ class LanTransportImpl @Inject constructor(
             .toByteArray(Charsets.UTF_8)
         socket.getOutputStream().write(fp)
         socket.getOutputStream().flush()
-        Timber.d("Fingerprint handshake sent to ${socket.inetAddress.hostAddress}")
     }
 
-    /**
-     * Handle an incoming TCP connection as the server.
-     * Reads the fingerprint header, then continuously reads
-     * length-prefixed messages.
-     */
     private suspend fun handleIncomingConnection(
         socket: Socket,
         remoteAddr: String,
-    ) {
-        withContext(Dispatchers.IO) {
-            try {
-                socket.soTimeout = SOCKET_TIMEOUT_MS
-                val input = socket.getInputStream()
-                val senderIp = socket.inetAddress.hostAddress
+    ) = withContext(Dispatchers.IO) {
+        try {
+            socket.soTimeout = SOCKET_TIMEOUT_MS
+            val input = socket.getInputStream()
+            val senderIp = socket.inetAddress.hostAddress
 
-                // Read fingerprint header (64 bytes)
-                val fpBuf = readExact(input, FINGERPRINT_LEN)
-                if (fpBuf == null) {
-                    Timber.w("Connection from $remoteAddr closed before fingerprint")
-                    return@withContext
-                }
-
-                val fingerprint = String(fpBuf, Charsets.UTF_8).trimEnd('0')
-                Timber.i("Incoming connection: fingerprint=$fingerprint @ $remoteAddr")
-
-                // Read length-prefixed messages in a loop
-                while (isActive && !socket.isClosed) {
-                    val data = readFramedMessage(input) ?: break
-                    _incomingData.send(
-                        LanIncoming(fingerprint, data, senderIp)
-                    )
-                    Timber.d("Received ${data.size}B from $fingerprint @ $senderIp")
-                }
-            } catch (_: SocketTimeoutException) {
-                Timber.d("Socket timeout from $remoteAddr — closing idle connection")
-            } catch (_: EOFException) {
-                Timber.d("Connection closed by peer: $remoteAddr")
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                if (isActive) Timber.w(e, "Error reading from LAN connection $remoteAddr")
-            } finally {
-                runCatching { socket.close() }
+            // Read client's fingerprint (they send first)
+            val fpBuf = readExact(input, FINGERPRINT_LEN)
+            if (fpBuf == null) {
+                Timber.w("No fingerprint from $remoteAddr")
+                return@withContext
             }
+            val fingerprint = String(fpBuf, Charsets.UTF_8).trimEnd('0')
+            Timber.i("✓ Incoming: fingerprint=$fingerprint @ $senderIp")
+
+            // Send OUR fingerprint back to the client
+            sendFingerprint(socket)
+
+            // Read messages
+            while (isActive && !socket.isClosed) {
+                val data = readFramedMessage(input) ?: break
+                _incomingData.send(LanIncoming(fingerprint, data, senderIp))
+                Timber.d("← ${data.size}B from $fingerprint")
+            }
+        } catch (_: SocketTimeoutException) {
+            Timber.d("Idle timeout: $remoteAddr")
+        } catch (_: EOFException) {
+            Timber.d("Peer disconnected: $remoteAddr")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (isActive) Timber.w(e, "Read error: $remoteAddr")
+        } finally {
+            runCatching { socket.close() }
         }
     }
 
-    /**
-     * Read messages from a socket we connected to (client side).
-     */
     private suspend fun readFromConnectedSocket(
         socket: Socket,
         key: String,
         senderIp: String,
-    ) {
-        withContext(Dispatchers.IO) {
-            try {
-                val input = socket.getInputStream()
-                // On the client side, we already sent our fingerprint,
-                // so we read the peer's fingerprint first
-                val fpBuf = readExact(input, FINGERPRINT_LEN)
-                val fingerprint = if (fpBuf != null) {
-                    String(fpBuf, Charsets.UTF_8).trimEnd('0')
-                } else {
-                    "unknown"
-                }
+    ) = withContext(Dispatchers.IO) {
+        try {
+            val input = socket.getInputStream()
 
-                while (isActive && !socket.isClosed) {
-                    val data = readFramedMessage(input) ?: break
-                    _incomingData.send(
-                        LanIncoming(fingerprint, data, senderIp)
-                    )
-                    Timber.d("Received ${data.size}B from $fingerprint @ $senderIp")
-                }
-            } catch (_: SocketTimeoutException) {
-                Timber.d("Socket timeout — closing idle connection $key")
-            } catch (_: EOFException) {
-                Timber.d("Connection closed by peer: $key")
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                if (isActive) Timber.w(e, "Error reading from socket $key")
-            } finally {
-                activeSockets.remove(key)
-                runCatching { socket.close() }
+            // Server will respond with its fingerprint after we sent ours
+            val fpBuf = readExact(input, FINGERPRINT_LEN)
+            val fingerprint = if (fpBuf != null) {
+                String(fpBuf, Charsets.UTF_8).trimEnd('0')
+            } else {
+                "unknown"
             }
+            Timber.i("✓ Server fingerprint: $fingerprint")
+
+            while (isActive && !socket.isClosed) {
+                val data = readFramedMessage(input) ?: break
+                _incomingData.send(LanIncoming(fingerprint, data, senderIp))
+                Timber.d("← ${data.size}B from $fingerprint")
+            }
+        } catch (_: SocketTimeoutException) {
+            Timber.d("Idle timeout: $key")
+        } catch (_: EOFException) {
+            Timber.d("Peer disconnected: $key")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (isActive) Timber.w(e, "Read error: $key")
+        } finally {
+            activeSockets.remove(key)
+            runCatching { socket.close() }
         }
     }
 
-    // ── Private: Discovery Helpers ─────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════
+    // PRIVATE: Discovery Helpers
+    // ═══════════════════════════════════════════════════════════════
 
     private fun discoverPeers() {
-        wifiP2pManager?.discoverPeers(
-            wifiP2pChannel,
-            object : WifiP2pManager.ActionListener {
-                override fun onSuccess() {
-                    Timber.d("WiFi Direct peer discovery initiated")
-                }
-
-                override fun onFailure(reason: Int) {
-                    Timber.w("WiFi Direct peer discovery failed: reason=$reason")
-                }
-            },
-        )
+        wifiP2pManager?.discoverPeers(wifiP2pChannel, object : WifiP2pManager.ActionListener {
+            override fun onSuccess() = Timber.d("WiFi Direct scan OK")
+            override fun onFailure(reason: Int) = Timber.w("WiFi Direct scan failed: $reason")
+        })
     }
 
     private fun refreshMergedPeers() {
@@ -633,8 +635,29 @@ class LanTransportImpl @Inject constructor(
             wfd = wifiDirectPeers.toList()
             mdns = mDNSPeers.toList()
         }
-        _discoveredPeers.value = (wfd + mdns).distinctBy {
-            "${it.deviceId}:${it.ipAddress}"
+        // mDNS gives real IP addresses → prefer those.
+        // WiFi Direct peers with no IP are still visible (name only) for manual entry.
+        val merged = mutableListOf<LanPeer>()
+        val seenIps = mutableSetOf<String>()
+
+        // mDNS first (has real IPs)
+        for (p in mdns) {
+            if (p.ipAddress.isNotBlank() && p.ipAddress !in seenIps) {
+                merged.add(p)
+                seenIps.add(p.ipAddress)
+            }
         }
+
+        // WiFi Direct — only add if we don't already have this IP from mDNS
+        for (p in wfd) {
+            // WiFi Direct peers may have blank IP (not yet connected)
+            // but we add them so user sees device names
+            if (p.ipAddress.isBlank() || p.ipAddress !in seenIps) {
+                merged.add(p)
+                seenIps.add(p.ipAddress)
+            }
+        }
+
+        _discoveredPeers.value = merged
     }
 }
