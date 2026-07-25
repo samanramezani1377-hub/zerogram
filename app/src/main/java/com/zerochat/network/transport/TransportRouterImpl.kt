@@ -193,12 +193,13 @@ class TransportRouterImpl @Inject constructor(
 
     private fun registerLanRoute(fingerprint: String, senderIp: String) {
         if (!peerRoutes.containsKey(fingerprint)) {
+            val port = LanTransportImpl.DEFAULT_PORT
             peerRoutes[fingerprint] = PeerRoute(
                 fingerprint = fingerprint,
                 transportMode = TransportMode.LAN,
-                lanEndpoint = Pair(senderIp, LanTransportImpl.DEFAULT_PORT),
+                lanEndpoint = Pair(senderIp, port),
             )
-            Timber.i("✓ Auto-route registered for incoming $fingerprint @ $senderIp")
+            Timber.i("✓ Auto-route registered for incoming $fingerprint @ $senderIp:$port")
 
             // Auto-save peer so the receiver can see the sender in Contacts
             // and reply without manual connection.
@@ -211,7 +212,7 @@ class TransportRouterImpl @Inject constructor(
                                 fingerprint = fingerprint,
                                 displayName = fingerprint.take(8),
                                 ipAddress = senderIp,
-                                port = LanTransportImpl.DEFAULT_PORT,
+                                port = port,
                                 preferredTransport = TransportMode.LAN,
                                 lastSeen = System.currentTimeMillis(),
                             )
@@ -221,6 +222,16 @@ class TransportRouterImpl @Inject constructor(
                         peerRepository.updateConnectionInfo(
                             fingerprint, senderIp, TransportMode.LAN, System.currentTimeMillis()
                         )
+                    }
+
+                    // Connect back to the sender so BOTH sides have a persistent
+                    // socket. Without this, the receiving side would use a
+                    // short-lived "fallback" connection for every message.
+                    try {
+                        lanTransport.connectDirect(senderIp, port)
+                        Timber.i("✓ Established persistent back-connection to $senderIp:$port")
+                    } catch (e: Exception) {
+                        Timber.w(e, "Back-connection to $senderIp failed (fallback will be used for sends)")
                     }
                 } catch (e: Exception) {
                     Timber.w(e, "Failed to auto-save peer $fingerprint")
