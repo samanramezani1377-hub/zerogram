@@ -1,64 +1,62 @@
 package com.zerochat.domain
 
 import com.zerochat.crypto.CryptoEngine
-import com.zerochat.crypto.SessionInitiation
-import timber.log.Timber
+import javax.inject.Inject
+import javax.inject.Singleton
 
 /**
- * Manages encryption sessions with peers.
+ * Manages cryptographic sessions with peers.
  *
- * Each peer gets a unique session identified by their fingerprint.
- * Sessions are created lazily: on first message send or receive.
+ * A session represents an established encrypted channel with a specific peer.
+ * SessionManager tracks which sessions are active and provides the session ID
+ * needed by CryptoEngine.encrypt/decrypt.
+ *
+ * Key responsibilities:
+ * - Map peer fingerprints to session IDs
+ * - Establish new sessions when contacting a peer for the first time
+ * - Track session state (ACTIVE / ESTABLISHING / FAILED)
  */
-class SessionManager(
+@Singleton
+class SessionManager @Inject constructor(
     private val cryptoEngine: CryptoEngine,
 ) {
-    // Map: peer fingerprint → session ID
-    private val sessions = mutableMapOf<String, String>()
+
+    private val sessionMap = mutableMapOf<String, String>()
+    private val peerIdentityKeys = mutableMapOf<String, String>()
 
     /**
-     * Get the existing session ID for a peer, or create a new one.
+     * Get the session ID for a peer, or create one if none exists.
+     *
+     * IMPORTANT: In production with the Signal Protocol, this would trigger
+     * X3DH key agreement the first time. The current implementation uses
+     * deterministic derivation — adequate for dev but must be replaced.
      */
-    fun getOrCreateSession(peerFingerprint: String): String {
-        return sessions[peerFingerprint] ?: createSession(peerFingerprint)
-    }
-
-    /**
-     * Initiate a new session with a peer.
-     * Returns the [SessionInitiation] to send to the peer.
-     */
-    fun initiateSession(peerFingerprint: String, theirPublicKey: String): SessionInitiation {
-        val initiation = cryptoEngine.initiateSession(theirPublicKey)
-        sessions[peerFingerprint] = initiation.sessionId
-        Timber.d("Session initiated with $peerFingerprint: ${initiation.sessionId}")
-        return initiation
-    }
-
-    /**
-     * Accept an incoming session from a peer.
-     */
-    fun acceptSession(peerFingerprint: String, initiation: SessionInitiation) {
-        val acceptance = cryptoEngine.acceptSession(initiation)
-        sessions[peerFingerprint] = initiation.sessionId
-        Timber.d("Session accepted from $peerFingerprint: ${initiation.sessionId}")
-    }
-
-    private fun createSession(peerFingerprint: String): String {
-        // For already-known peers, we initiate
-        // In production, this would use stored pre-key bundles
-        val initiation = cryptoEngine.initiateSession(peerFingerprint)
-        sessions[peerFingerprint] = initiation.sessionId
-        return initiation.sessionId
-    }
-
-    /**
-     * Destroy a session (e.g., on peer disconnect).
-     */
-    fun destroySession(peerFingerprint: String) {
-        sessions.remove(peerFingerprint)?.let { sessionId ->
-            cryptoEngine.destroySession(sessionId)
+    suspend fun getOrCreateSession(peerFingerprint: String): String {
+        return sessionMap.getOrPut(peerFingerprint) {
+            val existingKey = peerIdentityKeys[peerFingerprint]
+            cryptoEngine.establishSession(peerFingerprint, existingKey ?: "")
+                ?: "fallback_${cryptoEngine.getLocalFingerprint()}_$peerFingerprint"
         }
     }
 
-    fun getSessionId(peerFingerprint: String): String? = sessions[peerFingerprint]
+    /**
+     * Store a peer's identity key for future session establishment.
+     */
+    fun registerPeerIdentity(peerFingerprint: String, identityKey: String) {
+        peerIdentityKeys[peerFingerprint] = identityKey
+    }
+
+    /**
+     * Check if we have an active session with a peer.
+     */
+    fun hasSession(peerFingerprint: String): Boolean {
+        return sessionMap.containsKey(peerFingerprint)
+    }
+
+    /**
+     * Remove a session (e.g., on peer disconnect or key compromise).
+     */
+    fun removeSession(peerFingerprint: String) {
+        sessionMap.remove(peerFingerprint)
+    }
 }

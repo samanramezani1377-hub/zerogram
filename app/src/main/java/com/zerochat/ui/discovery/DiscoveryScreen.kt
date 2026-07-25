@@ -48,7 +48,22 @@ fun DiscoveryScreen(
                 .fillMaxSize()
                 .padding(paddingValues),
         ) {
-            // Manual IP entry
+            // Error banner
+            uiState.error?.let { error ->
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        text = error,
+                        modifier = Modifier.padding(16.dp),
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            }
+
+            // Manual IP entry dialog
             if (showAddPeerDialog) {
                 AlertDialog(
                     onDismissRequest = { showAddPeerDialog = false },
@@ -82,7 +97,6 @@ fun DiscoveryScreen(
 
             when {
                 uiState.isDiscovering -> {
-                    // Searching indicator
                     Column(
                         modifier = Modifier.fillMaxSize(),
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -103,7 +117,7 @@ fun DiscoveryScreen(
                     }
                 }
 
-                uiState.peers.isEmpty() && !uiState.isDiscovering -> {
+                uiState.peers.isEmpty() -> {
                     Column(
                         modifier = Modifier.fillMaxSize(),
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -133,7 +147,6 @@ fun DiscoveryScreen(
                     LazyColumn(
                         contentPadding = PaddingValues(vertical = 8.dp),
                     ) {
-                        // Connection mode indicator
                         item {
                             Card(
                                 modifier = Modifier
@@ -186,7 +199,7 @@ private fun DiscoveredPeerItem(
         modifier = Modifier.clickable(onClick = onClick),
         headlineContent = {
             Text(
-                text = peer.displayName,
+                text = peer.displayName.ifBlank { "Unknown Device" },
                 fontWeight = FontWeight.Medium,
             )
         },

@@ -70,9 +70,6 @@ class WifiDirectReceiver @Inject constructor(
         }
     }
 
-    /**
-     * Get the intent filter for dynamic registration.
-     */
     companion object {
         fun createIntentFilter(): IntentFilter = IntentFilter().apply {
             addAction(WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION)

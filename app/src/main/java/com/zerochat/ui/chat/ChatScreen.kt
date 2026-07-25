@@ -1,8 +1,12 @@
 package com.zerochat.ui.chat
 
 import androidx.activity.compose.rememberLauncherForActivityResult
-import android.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -15,14 +19,13 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.zerochat.data.model.Message
 import com.zerochat.data.model.MessageStatus
 import com.zerochat.data.model.TransportMode
-import com.zerochat.ui.theme.SentMessageColor
-import com.zerochat.ui.theme.ReceivedMessageColor
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -35,19 +38,17 @@ fun ChatScreen(
     var messageText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
 
-    // File picker launcher for attachments
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
-        uri?.let {
-            viewModel.sendMedia(it)
-        }
+        uri?.let { viewModel.sendMedia(it.toString()) }
     }
 
     LaunchedEffect(peerFingerprint) {
         viewModel.initialize(peerFingerprint)
     }
-    // Load messages and scroll to bottom on new messages
+
+    // Auto-scroll to bottom on new messages
     LaunchedEffect(uiState.messages.size) {
         if (uiState.messages.isNotEmpty()) {
             listState.animateScrollToItem(uiState.messages.size - 1)
@@ -65,7 +66,7 @@ fun ChatScreen(
                             text = when (uiState.transportMode) {
                                 TransportMode.LAN -> "🖧 Local Network"
                                 TransportMode.WAN -> "🌐 Internet"
-                                TransportMode.UNKNOWN -> "Connecting..."
+                                TransportMode.UNKNOWN -> if (uiState.isConnected) "Connected" else "Connecting..."
                             },
                             style = MaterialTheme.typography.bodySmall,
                         )
@@ -77,7 +78,6 @@ fun ChatScreen(
                     }
                 },
                 actions = {
-                    // Encryption status
                     Icon(
                         Icons.Default.Lock,
                         contentDescription = "Encrypted",
@@ -87,92 +87,153 @@ fun ChatScreen(
             )
         },
         bottomBar = {
-            Surface(
-                shadowElevation = 8.dp,
-                modifier = Modifier.imePadding(),
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 8.dp)
-                        .imePadding(),
-                    verticalAlignment = Alignment.CenterVertically,
+            Column {
+                // Error banner
+                AnimatedVisibility(
+                    visible = uiState.error != null,
+                    enter = fadeIn(),
+                    exit = fadeOut(),
                 ) {
-                    IconButton(onClick = { filePickerLauncher.launch("*/*") }) {
-                        Icon(Icons.Default.AttachFile, contentDescription = "Attach file")
-                    }
-
-                    OutlinedTextField(
-                        value = messageText,
-                        onValueChange = { messageText = it },
-                        placeholder = { Text("Type a message...") },
-                        modifier = Modifier.weight(1f),
-                        maxLines = 4,
-                        shape = RoundedCornerShape(24.dp),
-                    )
-
-                    Spacer(modifier = Modifier.width(4.dp))
-
-                    IconButton(
-                        onClick = {
-                            if (messageText.isNotBlank()) {
-                                viewModel.sendMessage(messageText.trim())
-                                messageText = ""
-                            }
-                        },
-                        enabled = messageText.isNotBlank(),
+                    Surface(
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Icon(
-                            Icons.Default.Send,
-                            contentDescription = "Send",
-                            tint = if (messageText.isNotBlank())
-                                MaterialTheme.colorScheme.primary
-                            else
-                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f),
+                        Row(
+                            modifier = Modifier
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                Icons.Default.ErrorOutline,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onErrorContainer,
+                                modifier = Modifier.size(16.dp),
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = uiState.error ?: "",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                modifier = Modifier.weight(1f),
+                            )
+                            IconButton(
+                                onClick = { viewModel.clearError() },
+                                modifier = Modifier.size(20.dp),
+                            ) {
+                                Icon(
+                                    Icons.Default.Close,
+                                    contentDescription = "Dismiss",
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Input bar
+                Surface(
+                    shadowElevation = 8.dp,
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 8.dp)
+                            .imePadding(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        IconButton(onClick = { filePickerLauncher.launch("*/*") }) {
+                            Icon(Icons.Default.AttachFile, contentDescription = "Attach file")
+                        }
+
+                        OutlinedTextField(
+                            value = messageText,
+                            onValueChange = { messageText = it },
+                            placeholder = { Text("Type a message...") },
+                            modifier = Modifier.weight(1f),
+                            maxLines = 4,
+                            shape = RoundedCornerShape(24.dp),
                         )
+
+                        Spacer(modifier = Modifier.width(4.dp))
+
+                        IconButton(
+                            onClick = {
+                                if (messageText.isNotBlank()) {
+                                    viewModel.sendMessage(messageText.trim())
+                                    messageText = ""
+                                }
+                            },
+                            enabled = messageText.isNotBlank(),
+                        ) {
+                            Icon(
+                                Icons.Default.Send,
+                                contentDescription = "Send",
+                                tint = if (messageText.isNotBlank())
+                                    MaterialTheme.colorScheme.primary
+                                else
+                                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f),
+                            )
+                        }
                     }
                 }
             }
         }
     ) { paddingValues ->
-        if (uiState.messages.isEmpty()) {
-            // Empty conversation
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-            ) {
-                Icon(
-                    Icons.Default.Lock,
-                    contentDescription = null,
-                    modifier = Modifier.size(48.dp),
-                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f),
-                )
-                Spacer(modifier = Modifier.height(16.dp))
-                Text(
-                    text = "Messages are end-to-end encrypted",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = "No one outside this chat can read them",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+        when {
+            uiState.isLoading -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(paddingValues),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CircularProgressIndicator()
+                }
             }
-        } else {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues),
-                state = listState,
-                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
-            ) {
-                items(uiState.messages, key = { it.id }) { message ->
-                    MessageBubble(message = message)
+
+            uiState.messages.isEmpty() -> {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(paddingValues),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    Icon(
+                        Icons.Default.Lock,
+                        contentDescription = null,
+                        modifier = Modifier.size(48.dp),
+                        tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f),
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "Messages are end-to-end encrypted",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "No one outside this chat can read them",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            else -> {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(paddingValues),
+                    state = listState,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+                ) {
+                    items(uiState.messages, key = { it.id }) { message ->
+                        MessageBubble(
+                            message = message,
+                            onRetry = { viewModel.retryMessage(message.id) },
+                        )
+                    }
                 }
             }
         }
@@ -180,13 +241,24 @@ fun ChatScreen(
 }
 
 @Composable
-private fun MessageBubble(message: Message) {
+private fun MessageBubble(
+    message: Message,
+    onRetry: () -> Unit = {},
+) {
     val isSent = message.isOutgoing
-    val bubbleColor = if (isSent) SentMessageColor else ReceivedMessageColor
-    val textColor = if (isSent)
-        MaterialTheme.colorScheme.onPrimary
-    else
-        MaterialTheme.colorScheme.onSurface
+    val isFailed = message.status == MessageStatus.FAILED
+
+    val bubbleColor = when {
+        isFailed && isSent -> MaterialTheme.colorScheme.errorContainer
+        isSent -> MaterialTheme.colorScheme.primaryContainer
+        else -> MaterialTheme.colorScheme.surfaceVariant
+    }
+
+    val textColor = when {
+        isFailed && isSent -> MaterialTheme.colorScheme.onErrorContainer
+        isSent -> MaterialTheme.colorScheme.onPrimaryContainer
+        else -> MaterialTheme.colorScheme.onSurface
+    }
 
     Column(
         modifier = Modifier
@@ -206,6 +278,10 @@ private fun MessageBubble(message: Message) {
                     )
                 )
                 .background(bubbleColor)
+                .then(
+                    if (isFailed) Modifier.clickable { onRetry() }
+                    else Modifier
+                )
                 .padding(horizontal = 12.dp, vertical = 8.dp)
         ) {
             Column {
@@ -229,27 +305,46 @@ private fun MessageBubble(message: Message) {
                     )
                     if (isSent) {
                         Spacer(modifier = Modifier.width(4.dp))
-                        Icon(
-                            when (message.status) {
-                                MessageStatus.SENDING -> Icons.Default.Schedule
-                                MessageStatus.SENT -> Icons.Default.Check
-                                MessageStatus.DELIVERED -> Icons.Default.DoneAll
-                                MessageStatus.READ -> Icons.Default.DoneAll
-                                MessageStatus.FAILED -> Icons.Default.ErrorOutline
-                            },
-                            contentDescription = message.status.name,
-                            modifier = Modifier.size(14.dp),
-                            tint = when (message.status) {
-                                MessageStatus.READ -> MaterialTheme.colorScheme.tertiary
-                                MessageStatus.FAILED -> MaterialTheme.colorScheme.error
-                                else -> textColor.copy(alpha = 0.6f)
-                            },
-                        )
+                        StatusIcon(message.status, textColor)
                     }
+                }
+
+                // Retry hint
+                if (isFailed) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Tap to retry",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = textColor.copy(alpha = 0.7f),
+                    )
                 }
             }
         }
     }
+}
+
+@Composable
+private fun StatusIcon(status: MessageStatus, tint: androidx.compose.ui.graphics.Color) {
+    val icon = when (status) {
+        MessageStatus.PENDING -> Icons.Default.Schedule
+        MessageStatus.SENDING -> Icons.Default.Schedule
+        MessageStatus.SENT -> Icons.Default.Check
+        MessageStatus.DELIVERED -> Icons.Default.DoneAll
+        MessageStatus.READ -> Icons.Default.DoneAll
+        MessageStatus.FAILED -> Icons.Default.ErrorOutline
+    }
+    val iconTint = when (status) {
+        MessageStatus.READ -> MaterialTheme.colorScheme.tertiary
+        MessageStatus.FAILED -> MaterialTheme.colorScheme.error
+        else -> tint.copy(alpha = 0.6f)
+    }
+
+    Icon(
+        icon,
+        contentDescription = status.name,
+        modifier = Modifier.size(14.dp),
+        tint = iconTint,
+    )
 }
 
 private fun formatTime(timestamp: Long): String {

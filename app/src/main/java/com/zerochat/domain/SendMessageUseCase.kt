@@ -1,16 +1,31 @@
 package com.zerochat.domain
 
 import com.zerochat.crypto.CryptoEngine
-import com.zerochat.data.model.*
+import com.zerochat.data.model.ContentType
+import com.zerochat.data.model.Message
+import com.zerochat.data.model.MessageStatus
+import com.zerochat.data.model.TransportMode
 import com.zerochat.network.transport.TransportRouter
-import kotlinx.coroutines.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import timber.log.Timber
+import javax.inject.Inject
+import javax.inject.Singleton
 
 /**
- * Core chat use case — handles the full lifecycle of a secure message:
- *  encrypt → route → send → track delivery
+ * Orchestrates the full send-message pipeline:
+ *
+ *   1. Create Message entity with PENDING status (for optimistic UI)
+ *   2. Save to local database (so UI shows it immediately)
+ *   3. Encrypt with peer's session key
+ *   4. Send via TransportRouter
+ *   5. Update status to SENT (or FAILED)
+ *
+ * All steps run on [Dispatchers.IO]. The Message entity is saved BEFORE
+ * encryption and transport so that the UI Flow triggers immediately.
  */
-class SendMessageUseCase(
+@Singleton
+class SendMessageUseCase @Inject constructor(
     private val cryptoEngine: CryptoEngine,
     private val messageRepository: MessageRepository,
     private val sessionManager: SessionManager,
@@ -20,118 +35,137 @@ class SendMessageUseCase(
     /**
      * Send a text message to a peer.
      *
-     * @param peerFingerprint Recipient fingerprint
-     * @param plaintext The message text
-     * @return The created Message with delivery status
+     * @param peerFingerprint the recipient's identity fingerprint
+     * @param plaintext the message text to send
+     * @return the saved Message entity with its final status
      */
     suspend operator fun invoke(
         peerFingerprint: String,
         plaintext: String,
-    ): Message {
-        // 1. Get or create session with peer
-        val sessionId = sessionManager.getOrCreateSession(peerFingerprint)
+    ): Message = withContext(Dispatchers.IO) {
+        // 1. Create message entity with PENDING status
+        val localFingerprint = cryptoEngine.getLocalFingerprint()
+        val messageId = Message.createId(localFingerprint)
 
-        // 2. Encrypt the message
-        val ciphertext = cryptoEngine.encrypt(sessionId, plaintext)
-
-        // 3. Create message record
         val message = Message(
-            id = "${cryptoEngine.getLocalFingerprint()}_${System.currentTimeMillis()}",
+            id = messageId,
             conversationId = peerFingerprint,
-            senderFingerprint = cryptoEngine.getLocalFingerprint(),
-            content = ciphertext,
+            senderFingerprint = localFingerprint,
             plainContent = plaintext,
+            content = "", // Will be filled after encryption
             contentType = ContentType.TEXT,
             timestamp = System.currentTimeMillis(),
-            status = MessageStatus.SENDING,
+            status = MessageStatus.PENDING,
             isOutgoing = true,
+            transportMode = transportRouter.currentMode(peerFingerprint),
         )
 
-        // 4. Persist to local DB
+        // 2. Save with PENDING status — UI sees it immediately via Flow
         messageRepository.saveMessage(message)
+        Timber.d("Message saved (PENDING): $messageId")
 
-        // 5. Send over the best available transport
-        return try {
-            val payload = serializeMessage(message)
-            transportRouter.send(peerFingerprint, payload)
+        // 3. Update to SENDING status
+        val sendingMessage = message.copy(status = MessageStatus.SENDING)
+        messageRepository.saveMessage(sendingMessage)
 
-            // 6. Update status
-            messageRepository.updateMessageStatus(message.id, MessageStatus.SENT)
-            message.copy(status = MessageStatus.SENT)
+        try {
+            // 4. Get or create encryption session
+            val sessionId = sessionManager.getOrCreateSession(peerFingerprint)
+
+            // 5. Encrypt
+            val ciphertext = cryptoEngine.encrypt(sessionId, plaintext)
+            if (ciphertext == null) {
+                Timber.e("Encryption returned null for session $sessionId")
+                return@withContext markFailed(messageId, "Encryption failed")
+            }
+
+            // 6. Send via transport
+            transportRouter.send(
+                peerFingerprint = peerFingerprint,
+                encryptedPayload = ciphertext.toByteArray(Charsets.UTF_8),
+            )
+
+            // 7. Update to SENT
+            val sentMessage = sendingMessage.copy(
+                content = ciphertext,
+                status = MessageStatus.SENT,
+                transportMode = transportRouter.currentMode(peerFingerprint),
+            )
+            messageRepository.saveMessage(sentMessage)
+            Timber.d("Message sent: $messageId → $peerFingerprint [${sentMessage.transportMode}]")
+            sentMessage
+
         } catch (e: Exception) {
-            Timber.e(e, "Failed to send message to $peerFingerprint")
-            messageRepository.updateMessageStatus(message.id, MessageStatus.FAILED)
-            message.copy(status = MessageStatus.FAILED)
+            Timber.e(e, "Failed to send message $messageId to $peerFingerprint")
+            markFailed(messageId, e.message ?: "Unknown error")
         }
     }
 
     /**
-     * Serialize a message to bytes for transport.
-     * Format: [4 bytes: message ID length][message ID UTF-8][4 bytes: sender length][sender UTF-8][4 bytes: content length][content]
+     * Send a message with a pre-created Message entity (for optimistic UI).
+     *
+     * The caller creates the Message with PENDING status and shows it in the UI
+     * before calling this method. This method handles encryption, transport,
+     * and status updates.
      */
-    private fun serializeMessage(message: Message): ByteArray {
-        val idBytes = message.id.toByteArray(Charsets.UTF_8)
-        val contentBytes = message.content.toByteArray(Charsets.UTF_8)
-        val senderBytes = message.senderFingerprint.toByteArray(Charsets.UTF_8)
+    suspend fun sendOptimistic(
+        message: Message,
+        plaintext: String,
+    ): Message = withContext(Dispatchers.IO) {
+        val sendingMessage = message.copy(status = MessageStatus.SENDING)
+        messageRepository.saveMessage(sendingMessage)
 
-        // Simple TLV-like format
-        val buffer = ByteArray(4 + idBytes.size + 4 + senderBytes.size + 4 + contentBytes.size)
-        var pos = 0
-
-        // Message ID
-        buffer.writeInt(pos, idBytes.size); pos += 4
-        System.arraycopy(idBytes, 0, buffer, pos, idBytes.size); pos += idBytes.size
-
-        // Sender fingerprint
-        buffer.writeInt(pos, senderBytes.size); pos += 4
-        System.arraycopy(senderBytes, 0, buffer, pos, senderBytes.size); pos += senderBytes.size
-
-        // Content
-        buffer.writeInt(pos, contentBytes.size); pos += 4
-        System.arraycopy(contentBytes, 0, buffer, pos, contentBytes.size)
-
-        return buffer
-    }
-
-    companion object {
-        /**
-         * Deserialize a message from transport bytes.
-         */
-        fun deserializeMessage(bytes: ByteArray): Pair<String, String>? {
-            try {
-                var pos = 0
-                // Read ID
-                val idLen = bytes.readInt(pos); pos += 4
-                val id = String(bytes, pos, idLen, Charsets.UTF_8); pos += idLen
-
-                // Read sender fingerprint
-                val senderLen = bytes.readInt(pos); pos += 4
-                val sender = String(bytes, pos, senderLen, Charsets.UTF_8); pos += senderLen
-
-                // Read content
-                val contentLen = bytes.readInt(pos); pos += 4
-                val content = String(bytes, pos, contentLen, Charsets.UTF_8)
-
-                return Pair(sender, content)
-            } catch (e: Exception) {
-                Timber.e(e, "Failed to deserialize message")
-                return null
+        try {
+            val sessionId = sessionManager.getOrCreateSession(message.conversationId)
+            val ciphertext = cryptoEngine.encrypt(sessionId, plaintext)
+            if (ciphertext == null) {
+                return@withContext markFailed(message.id, "Encryption failed")
             }
+
+            transportRouter.send(
+                peerFingerprint = message.conversationId,
+                encryptedPayload = ciphertext.toByteArray(Charsets.UTF_8),
+            )
+
+            val sentMessage = sendingMessage.copy(
+                content = ciphertext,
+                status = MessageStatus.SENT,
+                transportMode = transportRouter.currentMode(message.conversationId),
+            )
+            messageRepository.saveMessage(sentMessage)
+            Timber.d("Message sent (optimistic): ${message.id}")
+            sentMessage
+
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to send message ${message.id}")
+            markFailed(message.id, e.message ?: "Unknown error")
         }
     }
-}
 
-// ByteArray helpers
-private fun ByteArray.writeInt(offset: Int, value: Int) {
-    this[offset] = (value shr 24).toByte()
-    this[offset + 1] = (value shr 16).toByte()
-    this[offset + 2] = (value shr 8).toByte()
-    this[offset + 3] = value.toByte()
-}
+    // ── Private Helpers ─────────────────────────────────────────────
 
-private fun ByteArray.readInt(offset: Int): Int {
-    return ((this[offset].toInt() and 0xFF) shl 24) or
-            ((this[offset + 1].toInt() and 0xFF) shl 16) or
-            ((this[offset + 2].toInt() and 0xFF) shl 8) or
-            (this[offset + 3].toInt() and 0xFF)
+    private suspend fun markFailed(messageId: String, reason: String): Message {
+        // Read current message to preserve its data, update only status
+        // Since we don't have a direct read-by-id, we create a minimal update
+        return try {
+            // Update status in DB
+            messageRepository.updateStatus(messageId, MessageStatus.FAILED)
+            Timber.w("Message $messageId marked FAILED: $reason")
+            // Return a minimal representation — the Flow will re-emit the full entity
+            Message(
+                id = messageId,
+                conversationId = "",
+                senderFingerprint = "",
+                status = MessageStatus.FAILED,
+            )
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to mark message $messageId as FAILED")
+            Message(
+                id = messageId,
+                conversationId = "",
+                senderFingerprint = "",
+                status = MessageStatus.FAILED,
+            )
+        }
+    }
 }

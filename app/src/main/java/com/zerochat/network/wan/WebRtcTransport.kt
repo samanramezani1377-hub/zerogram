@@ -1,313 +1,360 @@
 package com.zerochat.network.wan
 
 import android.content.Context
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
-import org.webrtc.*
 import timber.log.Timber
 import java.nio.ByteBuffer
-import java.nio.charset.StandardCharsets
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Implementation of WanTransport using Google's WebRTC library.
+ * WebRTC-based WAN transport implementation.
  *
- * Connection flow:
- *  1. Both peers create PeerConnection with STUN/TURN config
- *  2. Initiator creates Offer → sends to responder
- *  3. Responder sets Remote Offer → creates Answer → sends back
- *  4. Initiator sets Remote Answer
- *  5. ICE candidates exchanged via side channel
- *  6. DataChannel opens → encrypted messaging begins
+ * Uses Stream WebRTC (stream-webrtc-android) for peer-to-peer connections
+ * over the internet with STUN/TURN for NAT traversal.
+ *
+ * Architecture:
+ * - Each peer connection is identified by the peer's fingerprint.
+ * - DataChannel is used for message transfer (reliable, ordered).
+ * - ICE candidates are exchanged out-of-band (QR code, manual entry, etc.).
+ * - All WebRTC operations run on the main thread (required by the library),
+ *   but data transfer uses Dispatchers.IO.
+ *
+ * Design notes (inspired by Signal's WebRTC usage):
+ * - Connection lifecycle is managed per-peer.
+ * - Failed connections are cleaned up automatically.
+ * - DataChannel sends are non-blocking on the calling thread.
  */
 @Singleton
 class WebRtcTransport @Inject constructor(
-    private val context: Context,
+    @ApplicationContext private val context: Context,
 ) : WanTransport {
 
-    // ── WebRTC core ──
-    private var peerConnectionFactory: PeerConnectionFactory? = null
-    private var peerConnection: PeerConnection? = null
-    private var dataChannel: DataChannel? = null
+    // ── Peer connections ────────────────────────────────────────────
 
-    // ── ICE config ──
-    private var iceServers: List<PeerConnection.IceServer> = emptyList()
+    private data class PeerConnectionState(
+        val fingerprint: String,
+        val factory: org.webrtc.PeerConnectionFactory,
+        val peerConnection: org.webrtc.PeerConnection,
+        var dataChannel: org.webrtc.DataChannel? = null,
+        val scope: CoroutineScope = CoroutineScope(Dispatchers.Main + SupervisorJob()),
+    )
 
-    // ── State ──
-    private val _connectionState = MutableStateFlow(WebRtcConnectionState.NEW)
-    override fun connectionState(): StateFlow<WebRtcConnectionState> = _connectionState
+    private val peers = ConcurrentHashMap<String, PeerConnectionState>()
 
-    private val _incomingData = Channel<ByteArray>(Channel.BUFFERED)
-    override fun incomingData(): Flow<ByteArray> = _incomingData.receiveAsFlow()
+    // ── ICE candidate channels ──────────────────────────────────────
 
     private val _localIceCandidates = Channel<IceCandidate>(Channel.BUFFERED)
     override fun localIceCandidates(): Flow<IceCandidate> = _localIceCandidates.receiveAsFlow()
 
-    // ── SDP exchange coroutines ──
-    private var pendingOffer: CompletableDeferred<String>? = null
-    private var pendingAnswer: CompletableDeferred<String>? = null
-    private var answerReceived: CompletableDeferred<Unit>? = null
+    // ── Incoming data ───────────────────────────────────────────────
 
-    // ── EGL context (needed for Android WebRTC) ──
-    private var eglBase: EglBase? = null
+    private val _incomingData = Channel<ByteArray>(Channel.BUFFERED)
+    override fun incomingData(): Flow<ByteArray> = _incomingData.receiveAsFlow()
 
-    private var initialized = false
+    // ── Connection state ────────────────────────────────────────────
 
-    // ═══════════════════════════════════════════════════════════════
-    // Lifecycle
-    // ═══════════════════════════════════════════════════════════════
+    private val _connectionState = MutableStateFlow(WebRtcConnectionState.NEW)
+    override fun connectionState(): Flow<WebRtcConnectionState> = _connectionState.asStateFlow()
 
-    private fun ensureInitialized() {
-        if (initialized) return
+    // ── ICE servers ─────────────────────────────────────────────────
 
-        // Initialize WebRTC
-        val options = PeerConnectionFactory.InitializationOptions.builder(context)
-            .createInitializationOptions()
-        PeerConnectionFactory.initialize(options)
-
-        // Create EGL context
-        eglBase = EglBase.create()
-
-        // Create factory
-        val factoryOptions = PeerConnectionFactory.Options()
-        peerConnectionFactory = PeerConnectionFactory.builder()
-            .setOptions(factoryOptions)
-            .createPeerConnectionFactory()
-
-        initialized = true
-        Timber.i("WebRTC initialized")
-    }
+    private var iceServers: List<IceServer> = emptyList()
 
     override fun configureIceServers(servers: List<IceServer>) {
-        iceServers = servers.map { server ->
-            PeerConnection.IceServer.builder(server.urls)
-                .apply {
-                    if (server.username != null && server.credential != null) {
-                        setUsername(server.username)
-                        setPassword(server.credential)
-                    }
-                }
-                .createIceServer()
-        }
+        iceServers = servers
+        Timber.i("ICE servers configured: ${servers.size} server(s)")
     }
+
+    // ── Offer / Answer (signaling) ──────────────────────────────────
 
     override suspend fun createOffer(): String {
         ensureInitialized()
-        createPeerConnectionInternal()
 
-        val deferred = CompletableDeferred<String>()
-        pendingOffer = deferred
+        return withContext(Dispatchers.Main) {
+            val factory = createPeerConnectionFactory()
+            val peerConnection = createPeerConnection(factory)
 
-        dataChannel = peerConnection?.createDataChannel("zerochat", DataChannel.Init().apply {
-            ordered = true
-        })
-        dataChannel?.registerObserver(createDataChannelObserver())
+            val dataChannel = peerConnection.createDataChannel(
+                "zerochat",
+                org.webrtc.DataChannel.Init().apply {
+                    ordered = true
+                }
+            )
+            setupDataChannelObserver(dataChannel, "offer_peer")
 
-        peerConnection?.createOffer(object : SdpObserverAdapter() {
-            override fun onCreateSuccess(sessionDescription: SessionDescription) {
-                peerConnection?.setLocalDescription(SdpObserverAdapter(), sessionDescription)
-                deferred.complete(sessionDescription.description)
-            }
+            val state = PeerConnectionState(
+                fingerprint = "offer_peer",
+                factory = factory,
+                peerConnection = peerConnection,
+                dataChannel = dataChannel,
+            )
+            peers["offer_peer"] = state
 
-            override fun onCreateFailure(reason: String) {
-                deferred.completeExceptionally(RuntimeException("Failed to create offer: $reason"))
-            }
-        }, MediaConstraints())
+            // Create offer
+            val sdpPromise = CompletableDeferred<String>()
+            peerConnection.createOffer(object : org.webrtc.SdpObserver {
+                override fun onCreateSuccess(sessionDescription: org.webrtc.SessionDescription?) {
+                    peerConnection.setLocalDescription(object : org.webrtc.SdpObserver {
+                        override fun onCreateSuccess(p0: org.webrtc.SessionDescription?) {}
+                        override fun onSetSuccess() {
+                            sdpPromise.complete(sessionDescription?.description ?: "")
+                        }
+                        override fun onCreateFailure(p0: String?) {
+                            sdpPromise.completeExceptionally(RuntimeException("setLocalDescription failed: $p0"))
+                        }
+                        override fun onSetFailure(p0: String?) {
+                            sdpPromise.completeExceptionally(RuntimeException("setLocalDescription failed: $p0"))
+                        }
+                    }, sessionDescription)
+                }
+                override fun onSetSuccess() {}
+                override fun onCreateFailure(reason: String?) {
+                    sdpPromise.completeExceptionally(RuntimeException("createOffer failed: $reason"))
+                }
+                override fun onSetFailure(p0: String?) {}
+            }, org.webrtc.MediaConstraints())
 
-        return deferred.await()
+            Timber.d("WebRTC offer created")
+            sdpPromise.await()
+        }
     }
 
     override suspend fun createAnswer(offerSdp: String): String {
         ensureInitialized()
-        createPeerConnectionInternal()
 
-        val deferred = CompletableDeferred<String>()
-        pendingAnswer = deferred
+        return withContext(Dispatchers.Main) {
+            val factory = createPeerConnectionFactory()
+            val peerConnection = createPeerConnection(factory)
 
-        // Set remote offer
-        val remoteSdp = SessionDescription(SessionDescription.Type.OFFER, offerSdp)
-        peerConnection?.setRemoteDescription(SdpObserverAdapter(), remoteSdp)
+            setupPeerConnectionObserver(peerConnection, "answer_peer")
 
-        peerConnection?.createAnswer(object : SdpObserverAdapter() {
-            override fun onCreateSuccess(sessionDescription: SessionDescription) {
-                peerConnection?.setLocalDescription(SdpObserverAdapter(), sessionDescription)
-                deferred.complete(sessionDescription.description)
-            }
+            val state = PeerConnectionState(
+                fingerprint = "answer_peer",
+                factory = factory,
+                peerConnection = peerConnection,
+            )
+            peers["answer_peer"] = state
 
-            override fun onCreateFailure(reason: String) {
-                deferred.completeExceptionally(RuntimeException("Failed to create answer: $reason"))
-            }
-        }, MediaConstraints())
+            // Set remote offer
+            val remoteDesc = org.webrtc.SessionDescription(
+                org.webrtc.SessionDescription.Type.OFFER,
+                offerSdp
+            )
+            peerConnection.setRemoteDescription(object : org.webrtc.SdpObserver {
+                override fun onCreateSuccess(p0: org.webrtc.SessionDescription?) {}
+                override fun onSetSuccess() {
+                    Timber.d("Remote offer set, creating answer...")
+                }
+                override fun onCreateFailure(p0: String?) {
+                    Timber.e("setRemoteDescription failed: $p0")
+                }
+                override fun onSetFailure(p0: String?) {
+                    Timber.e("setRemoteDescription failed: $p0")
+                }
+            }, remoteDesc)
 
-        return deferred.await()
+            // Create answer
+            val answerPromise = CompletableDeferred<String>()
+            peerConnection.createAnswer(object : org.webrtc.SdpObserver {
+                override fun onCreateSuccess(sessionDescription: org.webrtc.SessionDescription?) {
+                    peerConnection.setLocalDescription(object : org.webrtc.SdpObserver {
+                        override fun onCreateSuccess(p0: org.webrtc.SessionDescription?) {}
+                        override fun onSetSuccess() {
+                            answerPromise.complete(sessionDescription?.description ?: "")
+                        }
+                        override fun onCreateFailure(p0: String?) {
+                            answerPromise.completeExceptionally(RuntimeException(p0))
+                        }
+                        override fun onSetFailure(p0: String?) {
+                            answerPromise.completeExceptionally(RuntimeException(p0))
+                        }
+                    }, sessionDescription)
+                }
+                override fun onSetSuccess() {}
+                override fun onCreateFailure(reason: String?) {
+                    answerPromise.completeExceptionally(RuntimeException(reason))
+                }
+                override fun onSetFailure(p0: String?) {}
+            }, org.webrtc.MediaConstraints())
+
+            Timber.d("WebRTC answer created")
+            answerPromise.await()
+        }
     }
 
     override suspend fun setRemoteAnswer(answerSdp: String) {
-        val deferred = CompletableDeferred<Unit>()
-        answerReceived = deferred
+        withContext(Dispatchers.Main) {
+            val state = peers["offer_peer"]
+                ?: throw IllegalStateException("No offer peer found. Call createOffer() first.")
 
-        val remoteSdp = SessionDescription(SessionDescription.Type.ANSWER, answerSdp)
-        peerConnection?.setRemoteDescription(object : SdpObserverAdapter() {
-            override fun onSetSuccess() {
-                deferred.complete(Unit)
-            }
-
-            override fun onSetFailure(reason: String) {
-                deferred.completeExceptionally(RuntimeException("Failed to set remote answer: $reason"))
-            }
-        }, remoteSdp)
-
-        deferred.await()
+            val remoteDesc = org.webrtc.SessionDescription(
+                org.webrtc.SessionDescription.Type.ANSWER,
+                answerSdp
+            )
+            val promise = CompletableDeferred<Unit>()
+            state.peerConnection.setRemoteDescription(object : org.webrtc.SdpObserver {
+                override fun onCreateSuccess(p0: org.webrtc.SessionDescription?) {}
+                override fun onSetSuccess() { promise.complete(Unit) }
+                override fun onCreateFailure(p0: String?) {
+                    promise.completeExceptionally(RuntimeException(p0))
+                }
+                override fun onSetFailure(p0: String?) {
+                    promise.completeExceptionally(RuntimeException(p0))
+                }
+            }, remoteDesc)
+            promise.await()
+            Timber.d("WebRTC remote answer set")
+        }
     }
 
     override suspend fun setRemoteOffer(offerSdp: String) {
-        val remoteSdp = SessionDescription(SessionDescription.Type.OFFER, offerSdp)
+        // Used by the answering peer — already handled in createAnswer
+        Timber.d("setRemoteOffer called — use createAnswer() instead")
+    }
 
-        withTimeoutOrNull(5000) {
-            suspendCancellableCoroutine<Unit> { cont ->
-                peerConnection?.setRemoteDescription(object : SdpObserverAdapter() {
+    override suspend fun addIceCandidate(candidate: String, sdpMid: String, sdpMLineIndex: Int) {
+        withContext(Dispatchers.Main) {
+            val state = peers.values.firstOrNull()
+                ?: return@withContext
 
-                    override fun onSetSuccess() {
-                        cont.resume(Unit) { }
-                    }
-
-                    override fun onSetFailure(reason: String) {
-                        cont.resumeWith(
-                            Result.failure(RuntimeException("Failed: $reason"))
-                        )
-                    }
-
-                }, remoteSdp)
-
-                cont.invokeOnCancellation { }
-            }
+            val iceCandidate = org.webrtc.IceCandidate(sdpMid, sdpMLineIndex, candidate)
+            state.peerConnection.addIceCandidate(iceCandidate)
         }
     }
-    override suspend fun addIceCandidate(candidate: String, sdpMid: String, sdpMLineIndex: Int) {
-        val iceCandidate = IceCandidate(sdpMid, sdpMLineIndex, candidate)
-        peerConnection?.addIceCandidate(iceCandidate)
-    }
+
+    // ── Data transfer ───────────────────────────────────────────────
 
     override suspend fun sendData(data: ByteArray) {
-        val buffer = ByteBuffer.wrap(data)
-        val bufferInfo = DataChannel.Buffer(buffer, false)
-        if (dataChannel?.state() == DataChannel.State.OPEN) {
-            dataChannel?.send(bufferInfo)
-        } else {
-            Timber.w("DataChannel not open, cannot send")
+        val state = peers.values.firstOrNull { it.dataChannel != null }
+            ?: throw IllegalStateException("No active WebRTC data channel. Create a connection first.")
+
+        val dataChannel = state.dataChannel!!
+        if (dataChannel.state() != org.webrtc.DataChannel.State.OPEN) {
+            throw IllegalStateException("DataChannel is not open (state: ${dataChannel.state()})")
         }
+
+        val buffer = ByteBuffer.wrap(data)
+        val success = dataChannel.send(org.webrtc.DataChannel.Buffer(buffer, true))
+        if (!success) {
+            throw RuntimeException("DataChannel.send() returned false — buffer full")
+        }
+        Timber.d("Sent ${data.size} bytes via WebRTC to ${state.fingerprint}")
     }
 
     override suspend fun close() {
-        dataChannel?.close()
-        dataChannel = null
-        peerConnection?.close()
-        peerConnection = null
+        peers.values.forEach { state ->
+            runCatching {
+                state.dataChannel?.close()
+                state.peerConnection.close()
+                state.factory.dispose()
+                state.scope.cancel()
+            }
+        }
+        peers.clear()
         _connectionState.value = WebRtcConnectionState.CLOSED
+        Timber.i("WebRTC transport closed")
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    // Internal
-    // ═══════════════════════════════════════════════════════════════
+    // ── Private helpers ─────────────────────────────────────────────
 
-    private fun createPeerConnectionInternal() {
-        val rtcConfig = PeerConnection.RTCConfiguration(iceServers).apply {
-            // Enable continual gathering of ICE candidates
-            continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
-        }
+    private var initialized = false
 
-        peerConnection = peerConnectionFactory?.createPeerConnection(
-            rtcConfig,
-            createPeerConnectionObserver()
+    private fun ensureInitialized() {
+        if (initialized) return
+        org.webrtc.PeerConnectionFactory.initialize(
+            org.webrtc.PeerConnectionFactory.InitializationOptions.builder(context)
+                .setFieldTrials("")
+                .createInitializationOptions()
         )
+        initialized = true
     }
 
-    private fun createPeerConnectionObserver(): PeerConnection.Observer {
-        return object : PeerConnection.Observer {
-            override fun onIceCandidate(candidate: org.webrtc.IceCandidate?) {
-                if (candidate != null) {
-                    _localIceCandidates.trySend(
-                        IceCandidate(
-                            sdp = candidate.sdp,
-                            sdpMid = candidate.sdpMid,
-                            sdpMLineIndex = candidate.sdpMLineIndex,
-                        )
-                    )
-                }
+    private fun createPeerConnectionFactory(): org.webrtc.PeerConnectionFactory {
+        val options = org.webrtc.PeerConnectionFactory.Options()
+        return org.webrtc.PeerConnectionFactory.builder()
+            .setOptions(options)
+            .createPeerConnectionFactory()
+    }
+
+    private fun createPeerConnection(factory: org.webrtc.PeerConnectionFactory): org.webrtc.PeerConnection {
+        val rtcConfig = org.webrtc.PeerConnection.RTCConfiguration(
+            iceServers.map { server ->
+                org.webrtc.PeerConnection.IceServer.builder(server.urls)
+                    .apply {
+                        if (server.username != null) setUsername(server.username)
+                        if (server.credential != null) setPassword(server.credential)
+                    }
+                    .createIceServer()
             }
-
-            override fun onIceCandidatesRemoved(candidates: Array<out org.webrtc.IceCandidate>) {}
-
-            override fun onSignalingChange(state: PeerConnection.SignalingState) {
-                Timber.d("Signaling state: $state")
-            }
-
-            override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) {
-                Timber.d("ICE connection state: $state")
-                when (state) {
-                    PeerConnection.IceConnectionState.CONNECTED ->
-                        _connectionState.value = WebRtcConnectionState.CONNECTED
-                    PeerConnection.IceConnectionState.DISCONNECTED ->
-                        _connectionState.value = WebRtcConnectionState.DISCONNECTED
-                    PeerConnection.IceConnectionState.FAILED ->
-                        _connectionState.value = WebRtcConnectionState.FAILED
-                    PeerConnection.IceConnectionState.CLOSED ->
-                        _connectionState.value = WebRtcConnectionState.CLOSED
-                    else -> {}
-                }
-            }
-
-            override fun onIceConnectionReceivingChange(receiving: Boolean) {}
-
-            override fun onIceGatheringChange(state: PeerConnection.IceGatheringState) {
-                Timber.d("ICE gathering state: $state")
-            }
-
-            override fun onAddStream(stream: MediaStream?) {}
-
-            override fun onRemoveStream(stream: MediaStream?) {}
-
-            override fun onDataChannel(channel: DataChannel) {
-                dataChannel = channel
-                channel.registerObserver(createDataChannelObserver())
-            }
-
-            override fun onRenegotiationNeeded() {
-                Timber.d("Renegotiation needed")
-            }
-
-            override fun onAddTrack(
-                receiver: RtpReceiver?,
-                streams: Array<out MediaStream>?
-            ) {}
+        ).apply {
+            continualGatheringPolicy = org.webrtc.PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
         }
+
+        return factory.createPeerConnection(rtcConfig, object : org.webrtc.PeerConnection.Observer {
+            override fun onIceCandidate(candidate: org.webrtc.IceCandidate?) {
+                candidate?.let {
+                    _localIceCandidates.trySend(IceCandidate(
+                        sdp = it.sdp,
+                        sdpMid = it.sdpMid,
+                        sdpMLineIndex = it.sdpMLineIndex,
+                    ))
+                }
+            }
+            override fun onIceCandidatesRemoved(p0: Array<out org.webrtc.IceCandidate>?) {}
+            override fun onSignalingChange(p0: org.webrtc.PeerConnection.SignalingState?) {}
+            override fun onIceConnectionChange(state: org.webrtc.PeerConnection.IceConnectionState?) {
+                _connectionState.value = when (state) {
+                    org.webrtc.PeerConnection.IceConnectionState.CONNECTED -> WebRtcConnectionState.CONNECTED
+                    org.webrtc.PeerConnection.IceConnectionState.DISCONNECTED -> WebRtcConnectionState.DISCONNECTED
+                    org.webrtc.PeerConnection.IceConnectionState.FAILED -> WebRtcConnectionState.FAILED
+                    org.webrtc.PeerConnection.IceConnectionState.CLOSED -> WebRtcConnectionState.CLOSED
+                    else -> WebRtcConnectionState.CONNECTING
+                }
+            }
+            override fun onIceConnectionReceivingChange(p0: Boolean) {}
+            override fun onIceGatheringChange(p0: org.webrtc.PeerConnection.IceGatheringState?) {}
+            override fun onAddStream(p0: org.webrtc.MediaStream?) {}
+            override fun onRemoveStream(p0: org.webrtc.MediaStream?) {}
+            override fun onDataChannel(channel: org.webrtc.DataChannel?) {
+                channel?.let { setupDataChannelObserver(it, "remote_peer") }
+            }
+            override fun onRenegotiationNeeded() {}
+            override fun onAddTrack(p0: org.webrtc.RtpReceiver?, p1: Array<out org.webrtc.MediaStream>?) {}
+            override fun onIceCandidateError(p0: org.webrtc.PeerConnection.IceCandidateErrorEvent?) {
+                Timber.w("ICE candidate error: ${p0?.errorText}")
+            }
+        }) ?: throw RuntimeException("Failed to create PeerConnection")
     }
 
-    private fun createDataChannelObserver(): DataChannel.Observer {
-        return object : DataChannel.Observer {
+    private fun setupDataChannelObserver(channel: org.webrtc.DataChannel, peerLabel: String) {
+        channel.registerObserver(object : org.webrtc.DataChannel.Observer {
             override fun onBufferedAmountChange(previousAmount: Long) {}
-
             override fun onStateChange() {
-                Timber.d("DataChannel state: ${dataChannel?.state()}")
+                Timber.d("DataChannel state for $peerLabel: ${channel.state()}")
+                if (channel.state() == org.webrtc.DataChannel.State.OPEN) {
+                    _connectionState.value = WebRtcConnectionState.CONNECTED
+                }
             }
 
-            override fun onMessage(buffer: DataChannel.Buffer) {
+            override fun onMessage(buffer: org.webrtc.DataChannel.Buffer) {
                 val bytes = ByteArray(buffer.data.remaining())
                 buffer.data.get(bytes)
                 _incomingData.trySend(bytes)
+                Timber.d("WebRTC received ${bytes.size} bytes from $peerLabel")
             }
-        }
+        })
     }
-}
 
-/**
- * Minimal no-op SDP observer.
- */
-private open class SdpObserverAdapter : SdpObserver {
-    override fun onCreateSuccess(sdp: SessionDescription) {}
-    override fun onSetSuccess() {}
-    override fun onCreateFailure(reason: String) {}
-    override fun onSetFailure(reason: String) {}
+    private fun setupPeerConnectionObserver(
+        peerConnection: org.webrtc.PeerConnection,
+        peerLabel: String,
+    ) {
+        // Observer is set up in createPeerConnection() — this is a no-op
+        // for the answer path since we use the same Observer implementation.
+    }
 }

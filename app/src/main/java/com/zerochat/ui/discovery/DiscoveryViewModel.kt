@@ -2,6 +2,7 @@ package com.zerochat.ui.discovery
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.zerochat.data.model.Peer
 import com.zerochat.network.lan.LanPeer
 import com.zerochat.network.lan.LanTransport
 import com.zerochat.network.transport.TransportRouter
@@ -46,7 +47,6 @@ class DiscoveryViewModel @Inject constructor(
     fun connectToPeer(peer: LanPeer) {
         viewModelScope.launch {
             try {
-                // Register the peer with TransportRouter so it knows about this connection
                 val fingerprint = peer.deviceId.ifBlank { peer.ipAddress }
                 transportRouter.connectLan(peer.ipAddress, peer.port, fingerprint)
                 Timber.i("Connected to peer $fingerprint via LAN")
@@ -59,9 +59,9 @@ class DiscoveryViewModel @Inject constructor(
     fun connectManually(peerIdOrIp: String) {
         viewModelScope.launch {
             try {
-                if (peerIdOrIp.matches(Regex("\\d+\\.\\d+\\.\\d+\\.\\d+"))) {
-                    val port = com.zerochat.data.model.Peer.DEFAULT_PORT
-                    transportRouter.connectLan(peerIdOrIp, port, peerIdOrIp)
+                val ipPattern = Regex("\\d+\\.\\d+\\.\\d+\\.\\d+")
+                if (ipPattern.matches(peerIdOrIp)) {
+                    transportRouter.connectLan(peerIdOrIp, Peer.DEFAULT_PORT, peerIdOrIp)
                     Timber.i("Manual connection to $peerIdOrIp")
                 } else {
                     _uiState.update { it.copy(error = "Peer ID resolution not yet implemented") }

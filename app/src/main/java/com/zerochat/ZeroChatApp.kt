@@ -12,7 +12,16 @@ import timber.log.Timber
 import javax.inject.Inject
 
 /**
- * ZeroChat Application — initializes global components.
+ * ZeroChat Application entry point.
+ *
+ * Initializes:
+ * - Timber (logging) in debug builds
+ * - TransportRouter (LAN + WAN listeners)
+ * - IncomingMessageHandler (decrypt and persist incoming messages)
+ *
+ * All services run on a single application-scoped CoroutineScope
+ * backed by Dispatchers.IO. SupervisorJob ensures one failing
+ * service does not bring down the others.
  */
 @HiltAndroidApp
 class ZeroChatApp : Application() {
@@ -24,12 +33,13 @@ class ZeroChatApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        if (BuildConfig.DEBUG) {
+
+        if (runCatching { BuildConfig.DEBUG }.getOrDefault(true)) {
             Timber.plant(Timber.DebugTree())
         }
-        Timber.i("ZeroChat v${BuildConfig.VERSION_NAME} starting up")
 
-        // Start network services
+        Timber.i("ZeroChat v${runCatching { BuildConfig.VERSION_NAME }.getOrDefault("0.1.0")} starting up")
+
         appScope.launch {
             try {
                 transportRouter.start()
@@ -39,7 +49,6 @@ class ZeroChatApp : Application() {
             }
         }
 
-        // Start listening for incoming messages
         appScope.launch {
             try {
                 incomingMessageHandler.startListening()
