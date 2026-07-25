@@ -21,6 +21,11 @@ import com.zerochat.network.transport.TransportRouter
 import com.zerochat.network.transport.TransportRouterImpl
 import com.zerochat.network.signaling.SignalingClient
 import com.zerochat.network.signaling.WanSignalingManager
+import com.zerochat.domain.ConnectionRequestUseCase
+import com.zerochat.domain.ConnectionRequestRepository
+import com.zerochat.domain.BlockedPeerRepository
+import com.zerochat.data.repository.ConnectionRequestRepositoryImpl
+import com.zerochat.data.repository.BlockedPeerRepositoryImpl
 import com.zerochat.network.wan.WanTransport
 import com.zerochat.network.wan.WebRtcTransport
 import dagger.Module
@@ -146,4 +151,28 @@ object AppModule {
         signalingClient: SignalingClient,
         transportRouter: TransportRouter,
     ): WanSignalingManager = WanSignalingManager(signalingClient, transportRouter)
+
+    // ── Connection Requests ────────────────────────────────────────
+
+    @Provides @Singleton
+    fun provideConnectionRequestRepository(
+        dao: ConnectionRequestDao,
+    ): ConnectionRequestRepository = ConnectionRequestRepositoryImpl(dao)
+
+    @Provides @Singleton
+    fun provideBlockedPeerRepository(
+        dao: BlockedPeerDao,
+    ): BlockedPeerRepository = BlockedPeerRepositoryImpl(dao)
+
+    @Provides @Singleton
+    fun provideConnectionRequestUseCase(
+        requestRepo: ConnectionRequestRepository,
+        blockedRepo: BlockedPeerRepository,
+        peerRepo: PeerRepository,
+        transportRouter: TransportRouter,
+        lanTransport: LanTransport,
+        cryptoEngine: CryptoEngine,
+    ): ConnectionRequestUseCase = ConnectionRequestUseCase(
+        requestRepo, blockedRepo, peerRepo, transportRouter, lanTransport, cryptoEngine
+    )
 }

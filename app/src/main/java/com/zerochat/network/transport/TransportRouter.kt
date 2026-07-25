@@ -82,6 +82,14 @@ interface TransportRouter {
 
     /** Flow of locally generated ICE candidates for WAN connections */
     fun localIceCandidates(): Flow<IceCandidate>
+
+    /**
+     * Send raw bytes to a peer at a specific IP:port.
+     * Used for control messages (connection requests, etc).
+     */
+    suspend fun sendRaw(
+        peerFingerprint: String, ipAddress: String, port: Int, data: ByteArray,
+    )
 }
 
 /**

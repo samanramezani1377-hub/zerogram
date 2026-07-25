@@ -13,6 +13,8 @@ import com.zerochat.ui.chat.ChatScreen
 import com.zerochat.ui.contacts.ContactsScreen
 import com.zerochat.ui.discovery.DiscoveryScreen
 import com.zerochat.ui.settings.SettingsScreen
+import com.zerochat.ui.requests.RequestInboxScreen
+import com.zerochat.ui.blocked.BlockedPeersScreen
 
 /**
  * Application navigation graph.
@@ -30,6 +32,8 @@ object NavRoutes {
     const val DISCOVERY = "discovery"
     const val CHAT = "chat/{peerFingerprint}"
     const val SETTINGS = "settings"
+    const val REQUESTS = "requests"
+    const val BLOCKED = "blocked"
 
     fun chatRoute(fingerprint: String) = "chat/$fingerprint"
 }
@@ -96,6 +100,20 @@ fun ZeroChatNavHost(
 
         composable(NavRoutes.SETTINGS) {
             SettingsScreen(
+                onNavigateBack = { navController.popBackStack() },
+                onNavigateToBlocked = { navController.navigate(NavRoutes.BLOCKED) },
+                onNavigateToRequests = { navController.navigate(NavRoutes.REQUESTS) },
+            )
+        }
+
+        composable(NavRoutes.REQUESTS) {
+            RequestInboxScreen(
+                onNavigateBack = { navController.popBackStack() },
+            )
+        }
+
+        composable(NavRoutes.BLOCKED) {
+            BlockedPeersScreen(
                 onNavigateBack = { navController.popBackStack() },
             )
         }

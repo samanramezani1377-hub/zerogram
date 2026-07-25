@@ -34,6 +34,7 @@ class IncomingMessageHandler @Inject constructor(
     private val messageRepository: MessageRepository,
     private val sessionManager: SessionManager,
     private val transportRouter: TransportRouter,
+    private val connectionRequestUseCase: ConnectionRequestUseCase,
 ) {
 
     private val stateMutex = Mutex()
@@ -109,6 +110,13 @@ class IncomingMessageHandler @Inject constructor(
         try {
             val peerFingerprint = incoming.peerFingerprint
             val payload = incoming.payload
+
+            // Check if this is a connection request (JSON with type=connection_request)
+            val payloadStr = String(payload, Charsets.UTF_8)
+            if (payloadStr.startsWith("{"type":"connection_request"")) {
+                handleConnectionRequest(payloadStr, peerFingerprint)
+                return
+            }
 
             // 1. Get or create session with the peer
             val sessionId = try {
@@ -231,6 +239,28 @@ class IncomingMessageHandler @Inject constructor(
                 isOutgoing = false,
                 transportMode = transportMode,
             )
+        }
+    }
+
+    // ── Connection Request Handling ───────────────────────────────
+
+    private suspend fun handleConnectionRequest(payload: String, senderFingerprint: String) {
+        try {
+            val json = org.json.JSONObject(payload)
+            val requestId = json.optString("id", "")
+            val displayName = json.optString("display_name", senderFingerprint.take(8))
+            val senderIp = "" // Will be resolved by registerLanRoute
+
+            connectionRequestUseCase.receiveRequest(
+                senderFingerprint = senderFingerprint,
+                senderDisplayName = displayName,
+                senderIp = senderIp,
+                requestId = requestId,
+            )
+
+            Timber.i("Connection request processed from $senderFingerprint")
+        } catch (e: Exception) {
+            Timber.w(e, "Failed to parse connection request")
         }
     }
 

@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.zerochat.data.model.Peer
 import com.zerochat.data.model.TransportMode
 import com.zerochat.domain.PeerRepository
+import com.zerochat.domain.ConnectionRequestUseCase
 import com.zerochat.network.lan.LanPeer
 import com.zerochat.network.lan.LanTransport
 import com.zerochat.network.signaling.WanConnectStatus
@@ -36,6 +37,7 @@ class DiscoveryViewModel @Inject constructor(
     private val transportRouter: TransportRouter,
     private val peerRepository: PeerRepository,
     private val wanSignalingManager: WanSignalingManager,
+    private val connectionRequestUseCase: ConnectionRequestUseCase,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(DiscoveryUiState())
@@ -74,6 +76,18 @@ class DiscoveryViewModel @Inject constructor(
 
                 savePeer(actualFingerprint, peer, ip, port)
                 _uiState.update { it.copy(error = null) }
+
+                // Send connection request to the peer
+                try {
+                    connectionRequestUseCase.sendRequest(
+                        targetFingerprint = actualFingerprint,
+                        targetIp = ip,
+                        targetPort = port,
+                        displayName = peer.displayName.ifBlank { ip },
+                    )
+                } catch (e: Exception) {
+                    Timber.w(e, "Failed to send connection request")
+                }
                 _uiState.update { it.copy(connectedPeerFingerprint = actualFingerprint, error = null) }
                 Timber.i("Connected: $actualFingerprint ($ip:$port)")
             } catch (e: Exception) {

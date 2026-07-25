@@ -186,6 +186,12 @@ class TransportRouterImpl @Inject constructor(
 
     override fun localIceCandidates() = wanTransport.localIceCandidates()
 
+    override suspend fun sendRaw(
+        peerFingerprint: String, ipAddress: String, port: Int, data: ByteArray,
+    ) {
+        lanTransport.sendDataTo(data, ipAddress, port)
+    }
+
     private fun resolveLanFingerprint(incoming: LanIncoming): String {
         val fp = incoming.peerFingerprint
         if (fp.isNotBlank() && fp != "unknown") return fp
