@@ -1,6 +1,7 @@
 package com.zerochat.domain
 
 import com.zerochat.data.model.Peer
+import com.zerochat.data.model.TransportMode
 import kotlinx.coroutines.flow.Flow
 
 interface PeerRepository {
@@ -11,7 +12,7 @@ interface PeerRepository {
     suspend fun updateConnectionInfo(
         fingerprint: String,
         ipAddress: String,
-        transport: String,
+        transport: TransportMode,
         timestamp: Long,
     )
     suspend fun deletePeer(fingerprint: String)

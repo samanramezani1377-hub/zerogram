@@ -7,7 +7,7 @@
     <string name="send">Send</string>
     <string name="type_message">Type a message…</string>
     <string name="no_messages">No messages yet. Say hello!</string>
-    <string name="search_peers">Searching for nearby peers®</string>
+    <string name="search_peers">Searching for nearby peers…</string>
     <string name="no_peers_found">No peers found nearby</string>
     <string name="my_id">My ID</string>
     <string name="add_peer">Add Peer</string>

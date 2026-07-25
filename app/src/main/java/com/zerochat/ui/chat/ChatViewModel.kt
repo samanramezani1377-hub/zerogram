@@ -19,13 +19,6 @@ import kotlinx.coroutines.launch
 import timber.log.Timber
 import javax.inject.Inject
 
-/**
- * UI state for the ChatScreen.
- *
- * Messages are a reactive Flow from the database — whenever
- * a message is saved (sent or received), the Flow emits the
- * updated list and the UI recomposes automatically.
- */
 data class ChatUiState(
     val peerName: String = "Unknown",
     val messages: List<Message> = emptyList(),
@@ -50,35 +43,25 @@ class ChatViewModel @Inject constructor(
 
     private var peerFingerprint: String = ""
     private var messageCollectionJob: Job? = null
-    private var incomingListenerJob: Job? = null
 
-    /**
-     * Initialize the chat screen for a specific peer.
-     *
-     * This subscribes to two Flows:
-     * 1. messageRepository.getMessages() — reactive list of all messages
-     *    in this conversation. Updates automatically when messages are
-     *    saved (both outgoing and incoming).
-     * 2. transportRouter.incomingMessages() — raw incoming data that's
-     *    already handled by IncomingMessageHandler, but we watch it
-     *    to update the transport mode indicator.
-     */
     fun initialize(peerFingerprint: String) {
-        if (this.peerFingerprint == peerFingerprint && messageCollectionJob?.isActive == true) {
+        if (this.peerFingerprint == peerFingerprint &&
+            messageCollectionJob?.isActive == true
+        ) {
             return // Already initialized for this peer
         }
 
         this.peerFingerprint = peerFingerprint
+
+        // Cancel previous collection
+        messageCollectionJob?.cancel()
 
         // Ensure a session exists
         viewModelScope.launch {
             sessionManager.getOrCreateSession(peerFingerprint)
         }
 
-        // Cancel previous collection
-        messageCollectionJob?.cancel()
-
-        // Reactive message collection
+        // Reactive message collection from database
         messageCollectionJob = viewModelScope.launch {
             try {
                 messageRepository.getMessages(peerFingerprint).collect { messages ->
@@ -86,18 +69,25 @@ class ChatViewModel @Inject constructor(
                         it.copy(
                             messages = messages,
                             isLoading = false,
-                            peerName = peerFingerprint.take(12),
+                            peerName = formatPeerName(peerFingerprint),
                             transportMode = transportRouter.currentMode(peerFingerprint),
                         )
                     }
                 }
             } catch (e: Exception) {
                 Timber.e(e, "Error collecting messages for $peerFingerprint")
-                _uiState.update { it.copy(isLoading = false, error = "Failed to load messages") }
+                _uiState.update {
+                    it.copy(isLoading = false, error = "Failed to load messages")
+                }
             }
         }
 
-        // Observe transport mode changes
+        // Start incoming message processing
+        viewModelScope.launch {
+            incomingMessageHandler.startListening()
+        }
+
+        // Observe transport mode
         viewModelScope.launch {
             try {
                 _uiState.update {
@@ -105,26 +95,8 @@ class ChatViewModel @Inject constructor(
                 }
             } catch (_: Exception) {}
         }
-
-        // Start incoming message processing if not already running
-        viewModelScope.launch {
-            incomingMessageHandler.startListening()
-        }
     }
 
-    /**
-     * Send a text message with optimistic UI update.
-     *
-     * The message is saved to the database with PENDING status BEFORE
-     * encryption and transport. This means:
-     * 1. User taps Send
-     * 2. Message appears in the chat immediately (PENDING)
-     * 3. Encryption + transport happens in background
-     * 4. Status updates to SENDING → SENT (or FAILED)
-     *
-     * At each step, messageRepository.saveMessage() triggers the Flow,
-     * which updates the UI automatically — no manual list management.
-     */
     fun sendMessage(text: String) {
         if (peerFingerprint.isBlank()) {
             _uiState.update { it.copy(error = "No peer selected") }
@@ -155,19 +127,23 @@ class ChatViewModel @Inject constructor(
                 messageRepository.saveMessage(message)
                 Timber.d("Optimistic message saved: ${message.id}")
 
-                // 3. Encrypt and send (status updated by SendMessageUseCase)
+                // 3. Encrypt and send
                 val result = sendMessageUseCase.sendOptimistic(message, trimmed)
 
-                // 4. If failed, surface error to UI
-                if (result.status == MessageStatus.FAILED) {
-                    _uiState.update {
-                        it.copy(error = "Message failed to send — tap to retry")
+                // 4. Update error state based on result
+                when (result.status) {
+                    MessageStatus.FAILED -> {
+                        _uiState.update {
+                            it.copy(error = "Message failed to send — tap to retry")
+                        }
                     }
-                } else {
-                    // Clear any previous error
-                    _uiState.update { it.copy(error = null) }
+                    MessageStatus.SENT -> {
+                        _uiState.update { it.copy(error = null) }
+                    }
+                    else -> {
+                        // PENDING or SENDING — still in progress
+                    }
                 }
-
             } catch (e: Exception) {
                 Timber.e(e, "Error sending message to $peerFingerprint")
                 _uiState.update { it.copy(error = "Failed to send: ${e.message}") }
@@ -175,17 +151,31 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Retry sending a failed message.
-     */
     fun retryMessage(messageId: String) {
         viewModelScope.launch {
             try {
-                // Find the message in current state
+                // Find the failed message
                 val failedMessage = _uiState.value.messages.find { it.id == messageId }
-                if (failedMessage != null) {
-                    sendMessageUseCase.sendOptimistic(failedMessage, failedMessage.plainContent)
-                    _uiState.update { it.copy(error = null) }
+                if (failedMessage == null) {
+                    Timber.w("Cannot retry — message $messageId not found in UI state")
+                    return@launch
+                }
+
+                // Reset to PENDING so it moves up in the UI, then try to send
+                messageRepository.updateStatus(messageId, MessageStatus.PENDING)
+
+                val result = sendMessageUseCase.sendOptimistic(
+                    failedMessage.copy(status = MessageStatus.PENDING),
+                    failedMessage.plainContent,
+                )
+
+                _uiState.update {
+                    it.copy(
+                        error = when (result.status) {
+                            MessageStatus.FAILED -> "Retry failed — tap to retry"
+                            else -> null
+                        },
+                    )
                 }
             } catch (e: Exception) {
                 Timber.e(e, "Retry failed for message $messageId")
@@ -194,27 +184,22 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Send a media attachment.
-     */
     fun sendMedia(uriString: String) {
         if (peerFingerprint.isBlank()) return
 
         viewModelScope.launch {
             try {
                 val fileName = uriString.substringAfterLast("/")
-                val displayText = "📎 $fileName"
+                val displayText = "\uD83D\uDCCE $fileName"
                 sendMessage(displayText)
-                Timber.d("Media shared: $fileName")
             } catch (e: Exception) {
-                _uiState.update { it.copy(error = "Failed to send media: ${e.message}") }
+                _uiState.update {
+                    it.copy(error = "Failed to send media: ${e.message}")
+                }
             }
         }
     }
 
-    /**
-     * Clear error message from UI.
-     */
     fun clearError() {
         _uiState.update { it.copy(error = null) }
     }
@@ -222,6 +207,14 @@ class ChatViewModel @Inject constructor(
     override fun onCleared() {
         super.onCleared()
         messageCollectionJob?.cancel()
-        incomingListenerJob?.cancel()
+    }
+
+    private fun formatPeerName(fingerprint: String): String {
+        // Show first 8 + last 4 chars of fingerprint
+        return if (fingerprint.length >= 12) {
+            "${fingerprint.take(8)}…${fingerprint.takeLast(4)}"
+        } else {
+            fingerprint
+        }
     }
 }

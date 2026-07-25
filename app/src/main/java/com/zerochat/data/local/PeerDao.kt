@@ -6,6 +6,7 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Update
 import com.zerochat.data.model.Peer
+import com.zerochat.data.model.TransportMode
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -26,6 +27,12 @@ interface PeerDao {
     @Update
     suspend fun updatePeer(peer: Peer)
 
+    /**
+     * Update connection info for a peer.
+     *
+     * The transport parameter uses TransportMode directly (stored as String in Room)
+     * for type safety and to prevent stringly-typed bugs.
+     */
     @Query("""
         UPDATE peers
         SET last_seen = :timestamp,
@@ -36,7 +43,7 @@ interface PeerDao {
     suspend fun updateConnectionInfo(
         fingerprint: String,
         ipAddress: String,
-        transport: String,
+        transport: TransportMode,
         timestamp: Long,
     )
 

@@ -3,7 +3,6 @@ package com.zerochat.ui.discovery
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -16,7 +15,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -25,7 +23,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.zerochat.network.lan.LanPeer
-import com.zerochat.network.transport.DiscoveredPeer
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -52,7 +49,7 @@ fun DiscoveryScreen(
                     IconButton(onClick = { showAddPeerDialog = true }) {
                         Icon(Icons.Default.Add, contentDescription = "Add manually")
                     }
-                }
+                },
             )
         }
     ) { paddingValues ->
@@ -61,7 +58,7 @@ fun DiscoveryScreen(
                 .fillMaxSize()
                 .padding(paddingValues),
         ) {
-            // ── Tab Row ────────────────────────────────────────────
+            // Tab Row
             TabRow(selectedTabIndex = selectedTab) {
                 Tab(
                     selected = selectedTab == 0,
@@ -77,7 +74,7 @@ fun DiscoveryScreen(
                 )
             }
 
-            // Error banner (shared across tabs)
+            // Error banner
             AnimatedVisibility(
                 visible = uiState.error != null,
                 enter = fadeIn(),
@@ -131,12 +128,14 @@ fun DiscoveryScreen(
                         }) { Text("Connect") }
                     },
                     dismissButton = {
-                        TextButton(onClick = { showAddPeerDialog = false }) { Text("Cancel") }
+                        TextButton(onClick = {
+                            showAddPeerDialog = false
+                        }) { Text("Cancel") }
                     }
                 )
             }
 
-            // ── Tab Content ──────────────────────────────────────
+            // Tab Content
             when (selectedTab) {
                 0 -> ScanTab(uiState, viewModel, onPeerSelected)
                 1 -> PinCodeTab(uiState, viewModel)
@@ -164,7 +163,10 @@ private fun ScanTab(
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     CircularProgressIndicator()
                     Spacer(modifier = Modifier.height(16.dp))
-                    Text("Searching for nearby peers...", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        "Searching for nearby peers...",
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         "Make sure WiFi is enabled on both devices",
@@ -188,7 +190,10 @@ private fun ScanTab(
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Spacer(modifier = Modifier.height(16.dp))
-                    Text("No peers found", style = MaterialTheme.typography.headlineSmall)
+                    Text(
+                        "No peers found",
+                        style = MaterialTheme.typography.headlineSmall,
+                    )
                     Spacer(modifier = Modifier.height(8.dp))
                     Button(onClick = { viewModel.startDiscovery() }) {
                         Icon(Icons.Default.Refresh, contentDescription = null)
@@ -232,7 +237,11 @@ private fun ScanTab(
                 items(uiState.peers, key = { it.deviceId + it.ipAddress }) { peer ->
                     DiscoveredPeerItem(
                         peer = peer,
-                        onClick = { onPeerSelected(peer.deviceId) },
+                        onClick = {
+                            // Use the resolved fingerprint (not MAC address)
+                            val fp = viewModel.resolveFingerprint(peer)
+                            onPeerSelected(fp)
+                        },
                         onConnect = { viewModel.connectToPeer(peer) },
                     )
                 }
@@ -255,7 +264,7 @@ private fun PinCodeTab(
             .fillMaxSize()
             .padding(16.dp),
     ) {
-        // ── Section 1: MY PIN ───────────────────────────────────
+        // My PIN
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(
@@ -277,10 +286,8 @@ private fun PinCodeTab(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
                 )
-
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Big PIN display — 8 digits, monospace, no spacing
                 Text(
                     text = uiState.myPinCode,
                     fontSize = 48.sp,
@@ -319,12 +326,10 @@ private fun PinCodeTab(
         }
 
         Spacer(modifier = Modifier.height(24.dp))
-
         HorizontalDivider()
-
         Spacer(modifier = Modifier.height(24.dp))
 
-        // ── Section 2: ENTER PIN ────────────────────────────────
+        // Enter Other's PIN
         Text(
             "Enter Other Device's Code",
             style = MaterialTheme.typography.titleMedium,
@@ -339,7 +344,6 @@ private fun PinCodeTab(
             modifier = Modifier.fillMaxWidth(),
             textAlign = TextAlign.Center,
         )
-
         Spacer(modifier = Modifier.height(16.dp))
 
         OutlinedTextField(

@@ -5,9 +5,12 @@ import com.zerochat.data.model.ContentType
 import com.zerochat.data.model.Message
 import com.zerochat.data.model.MessageStatus
 import com.zerochat.data.model.TransportMode
+import com.zerochat.network.transport.IncomingTransportMessage
 import com.zerochat.network.transport.TransportRouter
 import kotlinx.coroutines.*
 import timber.log.Timber
+import java.util.Collections
+import java.util.LinkedHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -17,17 +20,12 @@ import javax.inject.Singleton
  * Listens to TransportRouter.incomingMessages() and processes each
  * encrypted payload: decrypt → deserialize → persist → notify UI.
  *
- * Because MessageRepository.getMessages() returns a Flow, saving a message
- * to the database automatically triggers a UI update for any ViewModel
- * that is collecting that Flow — no manual refresh needed.
- *
- * Key improvements:
- * - Proper coroutine lifecycle with SupervisorJob — one failed message
- *   doesn't kill the entire listener.
- * - Messages are deserialized via a simple protocol format with metadata.
- * - The peer fingerprint is correctly extracted from the transport.
- * - Missing peers get a placeholder saved so the conversation shows up.
- * - Duplicate message detection via message ID.
+ * Key improvements over the previous version:
+ * - Thread-safe with Mutex on internal state
+ * - LRU-based recentIds cache that auto-evicts old entries (no memory leak)
+ * - Proper CancellationException handling
+ * - startListening() is idempotent
+ * - Correct WAN peer fingerprint resolution
  */
 @Singleton
 class IncomingMessageHandler @Inject constructor(
@@ -37,67 +35,112 @@ class IncomingMessageHandler @Inject constructor(
     private val transportRouter: TransportRouter,
 ) {
 
-    private val handlerJob = Job()
-    private val handlerScope = CoroutineScope(Dispatchers.IO + handlerJob)
+    private val stateMutex = Mutex()
+    private var handlerJob: Job? = null
 
-    /** Track recently received message IDs to deduplicate */
-    private val recentIds = LinkedHashSet<String>(100)
+    /**
+     * LRU set for message deduplication.
+     * Automatically removes the eldest entry when size exceeds [MAX_RECENT_IDS].
+     */
+    private val recentIds = Collections.synchronizedMap(object :
+        LinkedHashMap<String, Boolean>(100, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>): Boolean {
+            return size > MAX_RECENT_IDS
+        }
+    })
+
+    private companion object {
+        const val MAX_RECENT_IDS = 500
+        const val RESTART_DELAY_MS = 2000L
+    }
 
     /**
      * Start listening to incoming messages.
-     * Safe to call multiple times — previous listener is cancelled first.
+     *
+     * Safe to call multiple times — the previous listener is cancelled
+     * and restarted. All state access is protected by [stateMutex].
      */
     suspend fun startListening() {
-        handlerJob.cancel()
-        handlerScope.launch {
+        stateMutex.lock()
+        val oldJob = handlerJob
+        handlerJob = null
+        stateMutex.unlock()
+
+        // Cancel old job outside the lock to avoid deadlock
+        oldJob?.cancelAndJoin()
+
+        stateMutex.lock()
+        val newJob = CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
             try {
                 transportRouter.incomingMessages().collect { incoming ->
                     handleIncomingMessage(incoming)
                 }
             } catch (e: CancellationException) {
-                Timber.d("IncomingMessageHandler cancelled")
+                Timber.d("IncomingMessageHandler listener cancelled")
                 throw e
             } catch (e: Exception) {
-                Timber.e(e, "Fatal error in incoming message listener — restarting")
-                delay(1000)
-                startListening() // Auto-restart on fatal error
+                Timber.e(e, "Fatal error in incoming message listener — restarting...")
+                delay(RESTART_DELAY_MS)
+                startListening() // Auto-restart
             }
         }
+        handlerJob = newJob
+        stateMutex.unlock()
     }
 
+    /**
+     * Stop the listener gracefully.
+     */
     suspend fun stop() {
-        handlerJob.cancel()
+        stateMutex.lock()
+        val job = handlerJob
+        handlerJob = null
+        stateMutex.unlock()
+
+        job?.cancelAndJoin()
     }
 
-    // ── Message Processing ──────────────────────────────────────────
+    // ── Message Processing ─────────────────────────────────────────
 
-    private suspend fun handleIncomingMessage(incoming: com.zerochat.network.transport.IncomingTransportMessage) {
+    private suspend fun handleIncomingMessage(
+        incoming: IncomingTransportMessage,
+    ) {
         try {
             val peerFingerprint = incoming.peerFingerprint
             val payload = incoming.payload
 
             // 1. Get or create session with the peer
-            val sessionId = sessionManager.getOrCreateSession(peerFingerprint)
+            val sessionId = try {
+                sessionManager.getOrCreateSession(peerFingerprint)
+            } catch (e: Exception) {
+                Timber.w(e, "Failed to get session for $peerFingerprint")
+                return
+            }
 
-            // 2. Decrypt
-            val ciphertextString = String(payload, Charsets.UTF_8)
-            val plaintext = cryptoEngine.decrypt(sessionId, ciphertextString)
+            // 2. Decrypt: payload is Base64 ciphertext from SendMessageUseCase
+            val ciphertextBase64 = String(payload, Charsets.UTF_8)
+            val plaintext = cryptoEngine.decrypt(sessionId, ciphertextBase64)
             if (plaintext == null) {
                 Timber.w("Decryption failed for message from $peerFingerprint")
                 return
             }
 
             // 3. Deserialize
-            val message = deserializeMessage(plaintext, peerFingerprint, incoming.transportMode)
+            val message = deserializeMessage(
+                plaintext,
+                peerFingerprint,
+                incoming.transportMode,
+            )
 
             // 4. Deduplicate (prevent double-insert if same message arrives twice)
-            if (recentIds.contains(message.id)) {
+            if (!recentIds.containsKey(message.id)) {
+                recentIds[message.id] = true
+            } else {
                 Timber.d("Duplicate message ${message.id} — skipping")
                 return
             }
-            recentIds.add(message.id)
 
-            // 5. Save to database — this triggers the Flow in ChatViewModel
+            // 5. Save to database — triggers Flow in ChatViewModel
             messageRepository.saveMessage(message)
 
             Timber.d("Message received and saved: ${message.id} from $peerFingerprint")
@@ -109,7 +152,7 @@ class IncomingMessageHandler @Inject constructor(
         }
     }
 
-    // ── Deserialization ─────────────────────────────────────────────
+    // ── Deserialization ────────────────────────────────────────────
 
     /**
      * Deserialize a plaintext message string into a Message entity.
@@ -117,11 +160,8 @@ class IncomingMessageHandler @Inject constructor(
      * Protocol format (v1):
      *   SENDER_FINGERPRINT|CONTENT_TYPE|TIMESTAMP|MESSAGE_BODY
      *
-     * Example:
-     *   a1b2c3d4|TEXT|1721904000000|Hello world
-     *
-     * This simple format allows embedding metadata in the encrypted payload
-     * without needing a separate envelope.
+     * This format allows embedding metadata in the encrypted payload
+     * without needing a separate envelope layer.
      */
     private fun deserializeMessage(
         plaintext: String,
@@ -132,15 +172,13 @@ class IncomingMessageHandler @Inject constructor(
             val parts = plaintext.split("|", limit = 4)
             if (parts.size >= 4) {
                 val senderFingerprint = parts[0]
-                val contentType = try {
+                val contentType = runCatching {
                     ContentType.valueOf(parts[1])
-                } catch (e: IllegalArgumentException) {
-                    ContentType.TEXT
-                }
+                }.getOrDefault(ContentType.TEXT)
                 val timestamp = parts[2].toLongOrNull() ?: System.currentTimeMillis()
                 val body = parts[3]
 
-                val messageId = "${senderFingerprint}_${timestamp}_${body.hashCode().toUInt().toString(16)}"
+                val messageId = buildMessageId(senderFingerprint, timestamp, body)
 
                 Message(
                     id = messageId,
@@ -155,9 +193,13 @@ class IncomingMessageHandler @Inject constructor(
                     transportMode = transportMode,
                 )
             } else {
-                // Fallback: treat whole payload as text body
+                // Fallback: treat entire payload as text body
                 val timestamp = System.currentTimeMillis()
-                val messageId = "${fallbackPeerFingerprint}_${timestamp}_${plaintext.hashCode().toUInt().toString(16)}"
+                val messageId = buildMessageId(
+                    fallbackPeerFingerprint,
+                    timestamp,
+                    plaintext,
+                )
 
                 Message(
                     id = messageId,
@@ -175,10 +217,9 @@ class IncomingMessageHandler @Inject constructor(
         } catch (e: Exception) {
             Timber.w(e, "Failed to parse message format — using raw text")
             val timestamp = System.currentTimeMillis()
-            val messageId = "${fallbackPeerFingerprint}_${timestamp}_r"
 
             Message(
-                id = messageId,
+                id = buildMessageId(fallbackPeerFingerprint, timestamp, "raw"),
                 conversationId = fallbackPeerFingerprint,
                 senderFingerprint = fallbackPeerFingerprint,
                 content = plaintext,
@@ -190,5 +231,14 @@ class IncomingMessageHandler @Inject constructor(
                 transportMode = transportMode,
             )
         }
+    }
+
+    private fun buildMessageId(
+        sender: String,
+        timestamp: Long,
+        body: String,
+    ): String {
+        val bodyHash = body.hashCode().toUInt().toString(16).take(8)
+        return "${sender.take(12)}_${timestamp}_$bodyHash"
     }
 }

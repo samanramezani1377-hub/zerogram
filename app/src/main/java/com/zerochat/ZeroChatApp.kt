@@ -36,14 +36,23 @@ class ZeroChatApp : Application() {
     override fun onCreate() {
         super.onCreate()
 
-        if (runCatching { BuildConfig.DEBUG }.getOrDefault(true)) {
+        // Safe debug check — uses a try-catch because ProGuard/R8 may
+        // optimize BuildConfig.DEBUG away in release builds.
+        val isDebug = runCatching { BuildConfig.DEBUG }.getOrDefault(false)
+
+        if (isDebug) {
             Timber.plant(Timber.DebugTree())
         }
 
-        Timber.i("ZeroChat v${runCatching { BuildConfig.VERSION_NAME }.getOrDefault("0.1.0")} starting up")
+        val versionName = runCatching { BuildConfig.VERSION_NAME }
+            .getOrDefault("0.1.0")
+
+        Timber.i("ZeroChat v$versionName starting up")
 
         appScope.launch {
             try {
+                // Generate or load identity before starting transports
+                cryptoEngine.generateIdentity()
                 val fp = cryptoEngine.getLocalFingerprint()
                 transportRouter.setLocalFingerprint(fp)
                 transportRouter.start()
@@ -66,7 +75,8 @@ class ZeroChatApp : Application() {
     override fun onTerminate() {
         super.onTerminate()
         appScope.launch {
-            transportRouter.stop()
+            runCatching { transportRouter.stop() }
+            runCatching { incomingMessageHandler.stop() }
         }
     }
 }

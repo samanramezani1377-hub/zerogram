@@ -10,17 +10,24 @@ import android.os.IBinder
 import com.zerochat.MainActivity
 import com.zerochat.R
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import timber.log.Timber
 import javax.inject.Inject
 
 /**
- * Foreground service that keeps the P2P networking alive
- * even when the app is in the background.
+ * Foreground service that keeps P2P networking alive when
+ * the app is in the background.
  */
 @AndroidEntryPoint
 class P2PNetworkService : Service() {
 
     @Inject
     lateinit var transportRouter: TransportRouter
+
+    private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     companion object {
         const val CHANNEL_ID = "zerochat_p2p"
@@ -37,7 +44,7 @@ class P2PNetworkService : Service() {
             this,
             0,
             Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
         val notification = Notification.Builder(this, CHANNEL_ID)
@@ -50,6 +57,15 @@ class P2PNetworkService : Service() {
 
         startForeground(NOTIFICATION_ID, notification)
 
+        // Ensure transport is started
+        serviceScope.launch {
+            try {
+                transportRouter.start()
+            } catch (e: Exception) {
+                Timber.e(e, "Failed to start TransportRouter from foreground service")
+            }
+        }
+
         return START_STICKY
     }
 
@@ -57,13 +73,21 @@ class P2PNetworkService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        serviceScope.launch {
+            try {
+                transportRouter.stop()
+                Timber.i("TransportRouter stopped via P2PNetworkService.onDestroy")
+            } catch (e: Exception) {
+                Timber.e(e, "Failed to stop TransportRouter")
+            }
+        }
     }
 
     private fun createNotificationChannel() {
         val channel = NotificationChannel(
             CHANNEL_ID,
             "ZeroChat P2P Service",
-            NotificationManager.IMPORTANCE_LOW
+            NotificationManager.IMPORTANCE_LOW,
         ).apply {
             description = "Keeps peer-to-peer connections alive"
         }

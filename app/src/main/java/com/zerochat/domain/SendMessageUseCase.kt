@@ -15,14 +15,13 @@ import javax.inject.Singleton
 /**
  * Orchestrates the full send-message pipeline:
  *
- *   1. Create Message entity with PENDING status (for optimistic UI)
- *   2. Save to local database (so UI shows it immediately)
- *   3. Encrypt with peer's session key
- *   4. Send via TransportRouter
- *   5. Update status to SENT (or FAILED)
+ *   1. Save message with PENDING status (optimistic UI)
+ *   2. Encrypt using peer's session key
+ *   3. Send encrypted payload via TransportRouter
+ *   4. Update status to SENT (or FAILED)
  *
- * All steps run on [Dispatchers.IO]. The Message entity is saved BEFORE
- * encryption and transport so that the UI Flow triggers immediately.
+ * All steps run on [Dispatchers.IO]. The Message is saved BEFORE
+ * encryption so that the UI Flow triggers immediately.
  */
 @Singleton
 class SendMessageUseCase @Inject constructor(
@@ -33,17 +32,16 @@ class SendMessageUseCase @Inject constructor(
 ) {
 
     /**
-     * Send a text message to a peer.
+     * Full send flow: create Message entity, encrypt, send, update status.
      *
      * @param peerFingerprint the recipient's identity fingerprint
      * @param plaintext the message text to send
-     * @return the saved Message entity with its final status
+     * @return the final Message entity with its status
      */
     suspend operator fun invoke(
         peerFingerprint: String,
         plaintext: String,
     ): Message = withContext(Dispatchers.IO) {
-        // 1. Create message entity with PENDING status
         val localFingerprint = cryptoEngine.getLocalFingerprint()
         val messageId = Message.createId(localFingerprint)
 
@@ -52,7 +50,7 @@ class SendMessageUseCase @Inject constructor(
             conversationId = peerFingerprint,
             senderFingerprint = localFingerprint,
             plainContent = plaintext,
-            content = "", // Will be filled after encryption
+            content = "",
             contentType = ContentType.TEXT,
             timestamp = System.currentTimeMillis(),
             status = MessageStatus.PENDING,
@@ -60,112 +58,97 @@ class SendMessageUseCase @Inject constructor(
             transportMode = transportRouter.currentMode(peerFingerprint),
         )
 
-        // 2. Save with PENDING status — UI sees it immediately via Flow
+        // Save with PENDING status — UI sees it immediately via Flow
         messageRepository.saveMessage(message)
         Timber.d("Message saved (PENDING): $messageId")
 
-        // 3. Update to SENDING status
-        val sendingMessage = message.copy(status = MessageStatus.SENDING)
-        messageRepository.saveMessage(sendingMessage)
-
-        try {
-            // 4. Get or create encryption session
-            val sessionId = sessionManager.getOrCreateSession(peerFingerprint)
-
-            // 5. Encrypt
-            val ciphertext = cryptoEngine.encrypt(sessionId, plaintext)
-            if (ciphertext == null) {
-                Timber.e("Encryption returned null for session $sessionId")
-                return@withContext markFailed(messageId, "Encryption failed")
-            }
-
-            // 6. Send via transport
-            transportRouter.send(
-                peerFingerprint = peerFingerprint,
-                encryptedPayload = ciphertext.toByteArray(Charsets.UTF_8),
-            )
-
-            // 7. Update to SENT
-            val sentMessage = sendingMessage.copy(
-                content = ciphertext,
-                status = MessageStatus.SENT,
-                transportMode = transportRouter.currentMode(peerFingerprint),
-            )
-            messageRepository.saveMessage(sentMessage)
-            Timber.d("Message sent: $messageId → $peerFingerprint [${sentMessage.transportMode}]")
-            sentMessage
-
-        } catch (e: Exception) {
-            Timber.e(e, "Failed to send message $messageId to $peerFingerprint")
-            markFailed(messageId, e.message ?: "Unknown error")
-        }
+        // Encrypt and send
+        performSend(message, plaintext)
     }
 
     /**
      * Send a message with a pre-created Message entity (for optimistic UI).
      *
-     * The caller creates the Message with PENDING status and shows it in the UI
-     * before calling this method. This method handles encryption, transport,
-     * and status updates.
+     * The caller creates the Message with PENDING status and shows it
+     * before calling this method. We handle encryption, transport, and
+     * status updates.
+     *
+     * @param message the pre-created Message entity
+     * @param plaintext the plaintext to encrypt and send
+     * @return the updated Message entity
      */
     suspend fun sendOptimistic(
         message: Message,
         plaintext: String,
     ): Message = withContext(Dispatchers.IO) {
+        performSend(message, plaintext)
+    }
+
+    // ── Core Send Logic ────────────────────────────────────────────
+
+    /**
+     * Core send: update status → SENDING → encrypt → transport → SENT/FAILED.
+     * Works for both invoke() and sendOptimistic() paths.
+     */
+    private suspend fun performSend(
+        message: Message,
+        plaintext: String,
+    ): Message {
+        // 1. Mark as SENDING
         val sendingMessage = message.copy(status = MessageStatus.SENDING)
         messageRepository.saveMessage(sendingMessage)
 
-        try {
+        return try {
+            // 2. Get or create encryption session
             val sessionId = sessionManager.getOrCreateSession(message.conversationId)
-            val ciphertext = cryptoEngine.encrypt(sessionId, plaintext)
-            if (ciphertext == null) {
-                return@withContext markFailed(message.id, "Encryption failed")
+
+            // 3. Encrypt plaintext → ciphertext (Base64-encoded)
+            val ciphertextBase64 = cryptoEngine.encrypt(sessionId, plaintext)
+            if (ciphertextBase64 == null) {
+                Timber.e("Encryption returned null for session $sessionId")
+                return markFailed(sendingMessage, "Encryption returned null")
             }
+
+            // 4. Send: Base64 ciphertext is sent as raw bytes over the transport.
+            //    The receiver decrypts: Base64 decode → AES-GCM decrypt → plaintext.
+            val encryptedBytes = ciphertextBase64.toByteArray(Charsets.UTF_8)
 
             transportRouter.send(
                 peerFingerprint = message.conversationId,
-                encryptedPayload = ciphertext.toByteArray(Charsets.UTF_8),
+                encryptedPayload = encryptedBytes,
             )
 
+            // 5. Update to SENT with the ciphertext stored
             val sentMessage = sendingMessage.copy(
-                content = ciphertext,
+                content = ciphertextBase64,
                 status = MessageStatus.SENT,
                 transportMode = transportRouter.currentMode(message.conversationId),
             )
             messageRepository.saveMessage(sentMessage)
-            Timber.d("Message sent (optimistic): ${message.id}")
+            Timber.d("Message sent: ${message.id} → ${message.conversationId} [${sentMessage.transportMode}]")
             sentMessage
 
         } catch (e: Exception) {
-            Timber.e(e, "Failed to send message ${message.id}")
-            markFailed(message.id, e.message ?: "Unknown error")
+            Timber.e(e, "Failed to send message ${message.id} to ${message.conversationId}")
+            markFailed(sendingMessage, e.message ?: "Unknown error")
         }
     }
 
-    // ── Private Helpers ─────────────────────────────────────────────
+    // ── Failure Handling ───────────────────────────────────────────
 
-    private suspend fun markFailed(messageId: String, reason: String): Message {
-        // Read current message to preserve its data, update only status
-        // Since we don't have a direct read-by-id, we create a minimal update
-        return try {
-            // Update status in DB
-            messageRepository.updateStatus(messageId, MessageStatus.FAILED)
-            Timber.w("Message $messageId marked FAILED: $reason")
-            // Return a minimal representation — the Flow will re-emit the full entity
-            Message(
-                id = messageId,
-                conversationId = "",
-                senderFingerprint = "",
-                status = MessageStatus.FAILED,
-            )
-        } catch (e: Exception) {
-            Timber.e(e, "Failed to mark message $messageId as FAILED")
-            Message(
-                id = messageId,
-                conversationId = "",
-                senderFingerprint = "",
-                status = MessageStatus.FAILED,
-            )
-        }
+    /**
+     * Mark a message as FAILED, preserving all original fields.
+     *
+     * The previous version created an incomplete Message with empty fields,
+     * which corrupted the database. Now we update the status in-place and
+     * return the original entity with status=FAILED for the caller.
+     */
+    private suspend fun markFailed(
+        message: Message,
+        reason: String,
+    ): Message {
+        messageRepository.updateStatus(message.id, MessageStatus.FAILED)
+        Timber.w("Message ${message.id} marked FAILED: $reason")
+        return message.copy(status = MessageStatus.FAILED)
     }
 }

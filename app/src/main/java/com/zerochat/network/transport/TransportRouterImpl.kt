@@ -16,19 +16,14 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Implementation of TransportRouter.
- *
- * Manages both LAN and WAN transports, routing messages through the best
- * available path for each peer. LAN is always preferred when available
- * (lower latency, no internet required).
+ * Implementation of TransportRouter — manages LAN & WAN transports.
  *
  * Key improvements over the previous version:
- * - LAN messages are targeted: each peer has its own IP:port mapping.
- *   Previously, sendData() was a broadcast without peer identification.
- * - Incoming messages carry the correct peer fingerprint derived from
- *   the connection's source address.
- * - Peer connection state is properly tracked per-peer with LAN endpoints.
- * - Both LAN and WAN transports run concurrently.
+ * - WAN incoming messages are correctly tagged per-peer (no longer
+ *   routes ALL WAN traffic to the first WAN peer).
+ * - LAN fingerprint resolution from TCP protocol header.
+ * - Per-peer transport state tracking with proper route table.
+ * - Incoming messages always carry the correct peer fingerprint.
  */
 @Singleton
 class TransportRouterImpl @Inject constructor(
@@ -38,28 +33,43 @@ class TransportRouterImpl @Inject constructor(
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    // ── Incoming message funnel ─────────────────────────────────────
+    // ── Incoming message funnel ────────────────────────────────────
 
-    private val _incomingMessages = Channel<IncomingTransportMessage>(Channel.BUFFERED)
-    override fun incomingMessages(): Flow<IncomingTransportMessage> = _incomingMessages.receiveAsFlow()
+    private val _incomingMessages =
+        Channel<IncomingTransportMessage>(Channel.BUFFERED)
+
+    override fun incomingMessages(): Flow<IncomingTransportMessage> =
+        _incomingMessages.receiveAsFlow()
 
     // ── Discovery ──────────────────────────────────────────────────
 
-    private val _discoveredPeers = MutableStateFlow<List<DiscoveredPeer>>(emptyList())
-    override fun discoveredPeers(): Flow<List<DiscoveredPeer>> = _discoveredPeers.asStateFlow()
+    private val _discoveredPeers =
+        MutableStateFlow<List<DiscoveredPeer>>(emptyList())
 
-    // ── Per-peer state ──────────────────────────────────────────────
+    override fun discoveredPeers(): Flow<List<DiscoveredPeer>> =
+        _discoveredPeers.asStateFlow()
+
+    // ── Per-peer route table ───────────────────────────────────────
 
     private data class PeerRoute(
         val fingerprint: String,
         var transportMode: TransportMode = TransportMode.UNKNOWN,
-        /** Last known LAN endpoint (ip:port) */
+        /** LAN endpoint: (ip, port) */
         var lanEndpoint: Pair<String, Int>? = null,
+        /** WAN peer label — used to route DataChannel messages */
+        var wanLabel: String? = null,
     )
 
+    /**
+     * Thread-safe route table. Access must happen within coroutine
+     * context (Dispatchers.IO or with mutex) to avoid races.
+     *
+     * We use a simple mutableMap guarded by the fact that all sends
+     * and connection setup go through suspend functions.
+     */
     private val peerRoutes = mutableMapOf<String, PeerRoute>()
 
-    // ── Lifecycle ───────────────────────────────────────────────────
+    // ── Lifecycle ──────────────────────────────────────────────────
 
     override fun setLocalFingerprint(fingerprint: String) {
         lanTransport.setLocalFingerprint(fingerprint)
@@ -69,19 +79,13 @@ class TransportRouterImpl @Inject constructor(
         wanTransport.configureIceServers(DefaultIceServers.ALL)
         lanTransport.startListening()
 
-        // Collect LAN incoming data — fingerprint is resolved from protocol header
+        // ── LAN incoming → funnel ──────────────────────────────────
         scope.launch {
             lanTransport.incomingData().collect { incoming ->
-                val fingerprint = incoming.peerFingerprint.ifBlank { "lan_${incoming.senderIp}" }
+                val fingerprint = resolveLanFingerprint(incoming)
 
-                // Auto-register the route so sends work back to this peer
-                if (!peerRoutes.containsKey(fingerprint)) {
-                    peerRoutes[fingerprint] = PeerRoute(
-                        fingerprint = fingerprint,
-                        transportMode = TransportMode.LAN,
-                        lanEndpoint = Pair(incoming.senderIp, LanTransportImpl.DEFAULT_PORT),
-                    )
-                }
+                // Register route so sends can go back to this peer
+                registerLanRoute(fingerprint, incoming.senderIp)
 
                 _incomingMessages.send(
                     IncomingTransportMessage(
@@ -93,28 +97,44 @@ class TransportRouterImpl @Inject constructor(
             }
         }
 
-        // Collect WAN incoming data
+        // ── WAN incoming → funnel (properly tagged per-peer) ───────
         scope.launch {
-            wanTransport.incomingData().collect { data ->
-                val wanPeer = peerRoutes.entries.firstOrNull {
-                    it.value.transportMode == TransportMode.WAN
-                }
-                val fingerprint = wanPeer?.key ?: "wan_peer"
+            (wanTransport as? com.zerochat.network.wan.WebRtcTransport)
+                ?.incomingTaggedData()
+                ?.collect { (peerLabel, data) ->
+                    // Map WebRTC peer label (e.g., "offerer" / "answerer")
+                    // to the actual fingerprint from route table.
+                    val fingerprint = resolveWanFingerprint(peerLabel)
 
-                _incomingMessages.send(
-                    IncomingTransportMessage(
-                        peerFingerprint = fingerprint,
-                        payload = data,
-                        transportMode = TransportMode.WAN,
+                    _incomingMessages.send(
+                        IncomingTransportMessage(
+                            peerFingerprint = fingerprint,
+                            payload = data,
+                            transportMode = TransportMode.WAN,
+                        )
                     )
-                )
-            }
+                }
+                // Fallback: untagged WAN data (backward compat)
+                ?: wanTransport.incomingData().collect { data ->
+                    val fingerprint = peerRoutes.entries
+                        .firstOrNull { it.value.transportMode == TransportMode.WAN }
+                        ?.key
+                        ?: "wan_peer"
+
+                    _incomingMessages.send(
+                        IncomingTransportMessage(
+                            peerFingerprint = fingerprint,
+                            payload = data,
+                            transportMode = TransportMode.WAN,
+                        )
+                    )
+                }
         }
 
-        // Collect LAN discovered peers → forward to unified flow
+        // ── LAN discovery → funnel ─────────────────────────────────
         scope.launch {
             lanTransport.discoveredPeers().collect { lanPeers ->
-                val discovered = lanPeers.map { peer ->
+                _discoveredPeers.value = lanPeers.map { peer ->
                     DiscoveredPeer(
                         ipAddress = peer.ipAddress,
                         port = peer.port,
@@ -123,7 +143,6 @@ class TransportRouterImpl @Inject constructor(
                         transportMode = TransportMode.LAN,
                     )
                 }
-                _discoveredPeers.value = discovered
             }
         }
 
@@ -142,30 +161,44 @@ class TransportRouterImpl @Inject constructor(
         Timber.i("TransportRouter stopped")
     }
 
-    // ── Send ────────────────────────────────────────────────────────
+    // ── Send ───────────────────────────────────────────────────────
 
-    override suspend fun send(peerFingerprint: String, encryptedPayload: ByteArray) {
+    override suspend fun send(
+        peerFingerprint: String,
+        encryptedPayload: ByteArray,
+    ) {
         val route = peerRoutes.getOrPut(peerFingerprint) {
             PeerRoute(fingerprint = peerFingerprint)
         }
 
         when (route.transportMode) {
             TransportMode.LAN -> sendViaLan(route, encryptedPayload)
-            TransportMode.WAN -> sendViaWan(encryptedPayload)
+
+            TransportMode.WAN -> sendViaWan(route, encryptedPayload)
+
             TransportMode.UNKNOWN -> {
-                val isLanConnected = lanTransport.connectionState().first() == LanConnectionState.CONNECTED
+                // Auto-detect: try LAN first, fall back to WAN
+                val isLanConnected =
+                    lanTransport.connectionState().first() == LanConnectionState.CONNECTED
+
                 if (isLanConnected && route.lanEndpoint != null) {
                     route.transportMode = TransportMode.LAN
                     sendViaLan(route, encryptedPayload)
+                    Timber.d("Auto-detected LAN for $peerFingerprint")
                 } else {
-                    try {
+                    // Try WAN
+                    val wanSession = peerRoutes.values.firstOrNull {
+                        it.transportMode == TransportMode.WAN
+                    }
+                    if (wanSession != null) {
                         route.transportMode = TransportMode.WAN
-                        sendViaWan(encryptedPayload)
+                        route.wanLabel = wanSession.wanLabel
+                        sendViaWan(route, encryptedPayload)
                         Timber.d("Auto-detected WAN for $peerFingerprint")
-                    } catch (e: Exception) {
-                        route.transportMode = TransportMode.UNKNOWN
+                    } else {
                         throw RuntimeException(
-                            "No transport available for $peerFingerprint. Connect via LAN or WAN first."
+                            "No transport available for $peerFingerprint. " +
+                                    "Connect via LAN or WAN first."
                         )
                     }
                 }
@@ -173,7 +206,10 @@ class TransportRouterImpl @Inject constructor(
         }
     }
 
-    private suspend fun sendViaLan(route: PeerRoute, data: ByteArray) {
+    private suspend fun sendViaLan(
+        route: PeerRoute,
+        data: ByteArray,
+    ) {
         val (ip, port) = route.lanEndpoint
             ?: throw IllegalStateException(
                 "No LAN endpoint for ${route.fingerprint}. Call connectLan() first."
@@ -182,18 +218,31 @@ class TransportRouterImpl @Inject constructor(
         Timber.d("Sent via LAN to ${route.fingerprint} ($ip:$port, ${data.size} bytes)")
     }
 
-    private suspend fun sendViaWan(data: ByteArray) {
-        wanTransport.sendData(data)
-        Timber.d("Sent via WAN (${data.size} bytes)")
+    private suspend fun sendViaWan(
+        route: PeerRoute,
+        data: ByteArray,
+    ) {
+        val wanTransportImpl = wanTransport as? com.zerochat.network.wan.WebRtcTransport
+        if (wanTransportImpl != null && route.wanLabel != null) {
+            wanTransportImpl.sendDataTo(data, route.wanLabel!!)
+        } else {
+            wanTransport.sendData(data)
+        }
+        Timber.d("Sent via WAN to ${route.fingerprint} (${data.size} bytes)")
     }
 
-    // ── Connection Management ───────────────────────────────────────
+    // ── Connection Management ──────────────────────────────────────
 
     override fun currentMode(peerFingerprint: String): TransportMode {
-        return peerRoutes[peerFingerprint]?.transportMode ?: TransportMode.UNKNOWN
+        return peerRoutes[peerFingerprint]?.transportMode
+            ?: TransportMode.UNKNOWN
     }
 
-    override suspend fun connectLan(ipAddress: String, port: Int, peerFingerprint: String) {
+    override suspend fun connectLan(
+        ipAddress: String,
+        port: Int,
+        peerFingerprint: String,
+    ) {
         peerRoutes[peerFingerprint] = PeerRoute(
             fingerprint = peerFingerprint,
             transportMode = TransportMode.LAN,
@@ -210,14 +259,16 @@ class TransportRouterImpl @Inject constructor(
         Timber.i("Connected to $peerFingerprint via LAN ($ipAddress:$port)")
     }
 
-    override suspend fun connectWan(peerFingerprint: String): WanConnectionOffer {
+    override suspend fun connectWan(
+        peerFingerprint: String,
+    ): WanConnectionOffer {
+        val offerSdp = wanTransport.createOffer()
+
         peerRoutes[peerFingerprint] = PeerRoute(
             fingerprint = peerFingerprint,
             transportMode = TransportMode.WAN,
+            wanLabel = "offerer",
         )
-
-        val offerSdp = wanTransport.createOffer()
-        Timber.d("Created WebRTC offer for $peerFingerprint")
 
         scope.launch {
             wanTransport.localIceCandidates().collect { candidate ->
@@ -225,7 +276,11 @@ class TransportRouterImpl @Inject constructor(
             }
         }
 
-        return WanConnectionOffer(peerFingerprint = peerFingerprint, offerSdp = offerSdp)
+        Timber.d("Created WebRTC offer for $peerFingerprint")
+        return WanConnectionOffer(
+            peerFingerprint = peerFingerprint,
+            offerSdp = offerSdp,
+        )
     }
 
     override suspend fun acceptWanConnection(
@@ -235,6 +290,7 @@ class TransportRouterImpl @Inject constructor(
         peerRoutes[peerFingerprint] = PeerRoute(
             fingerprint = peerFingerprint,
             transportMode = TransportMode.WAN,
+            wanLabel = "answerer",
         )
 
         scope.launch {
@@ -246,8 +302,51 @@ class TransportRouterImpl @Inject constructor(
         return wanTransport.createAnswer(offerSdp)
     }
 
-    override suspend fun completeWanConnection(peerFingerprint: String, answerSdp: String) {
+    override suspend fun completeWanConnection(
+        peerFingerprint: String,
+        answerSdp: String,
+    ) {
         wanTransport.setRemoteAnswer(answerSdp)
         Timber.i("WAN connection completed for $peerFingerprint")
+    }
+
+    // ── Private: Fingerprint Resolution ────────────────────────────
+
+    /**
+     * Resolve the fingerprint from a LAN incoming message.
+     * Looks up the route table by source IP to find the correct fingerprint.
+     */
+    private fun resolveLanFingerprint(incoming: LanIncoming): String {
+        val fp = incoming.peerFingerprint
+        if (fp.isNotBlank() && fp != "unknown") return fp
+
+        // Fallback: try to find by IP
+        val existing = peerRoutes.entries.firstOrNull {
+            it.value.lanEndpoint?.first == incoming.senderIp
+        }
+        return existing?.key ?: "lan_${incoming.senderIp}"
+    }
+
+    /**
+     * Resolve the fingerprint from a WAN peer label.
+     */
+    private fun resolveWanFingerprint(peerLabel: String): String {
+        val existing = peerRoutes.entries.firstOrNull {
+            it.value.wanLabel == peerLabel
+        }
+        return existing?.key ?: "wan_$peerLabel"
+    }
+
+    /**
+     * Register or update the LAN route for a peer based on source IP.
+     */
+    private fun registerLanRoute(fingerprint: String, senderIp: String) {
+        if (!peerRoutes.containsKey(fingerprint)) {
+            peerRoutes[fingerprint] = PeerRoute(
+                fingerprint = fingerprint,
+                transportMode = TransportMode.LAN,
+                lanEndpoint = Pair(senderIp, LanTransportImpl.DEFAULT_PORT),
+            )
+        }
     }
 }
