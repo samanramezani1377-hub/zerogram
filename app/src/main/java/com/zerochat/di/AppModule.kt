@@ -25,39 +25,24 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
-import javax.inject.Qualifier
 import javax.inject.Singleton
-
-@Qualifier
-@Retention(AnnotationRetention.BINARY)
-annotation class DefaultDispatcher
 
 @Module
 @InstallIn(SingletonComponent::class)
 object AppModule {
 
-    // ── Crypto ─────────────────────────────────────────────────────
-
-    @Provides
-    @Singleton
+    @Provides @Singleton
     fun provideCryptoEngine(impl: AesCryptoEngine): CryptoEngine = impl
 
-    // ── Database ───────────────────────────────────────────────────
-
-    @Provides
-    @Singleton
+    @Provides @Singleton
     fun provideDatabase(@ApplicationContext context: Context): ZeroChatDatabase =
         androidx.room.Room.databaseBuilder(
-            context,
-            ZeroChatDatabase::class.java,
-            ZeroChatDatabase.DATABASE_NAME
+            context, ZeroChatDatabase::class.java, ZeroChatDatabase.DATABASE_NAME
         ).build()
 
     @Provides fun provideMessageDao(db: ZeroChatDatabase): MessageDao = db.messageDao()
     @Provides fun providePeerDao(db: ZeroChatDatabase): PeerDao = db.peerDao()
     @Provides fun provideUserProfileDao(db: ZeroChatDatabase): UserProfileDao = db.userProfileDao()
-
-    // ── Repositories ───────────────────────────────────────────────
 
     @Provides @Singleton
     fun provideMessageRepository(dao: MessageDao): MessageRepository =
@@ -68,10 +53,10 @@ object AppModule {
         PeerRepositoryImpl(dao)
 
     @Provides @Singleton
-    fun provideProfileImageRepository(dao: UserProfileDao, @ApplicationContext context: Context): ProfileImageRepository =
-        ProfileImageRepositoryImpl(dao, context)
-
-    // ── Profile Image ──────────────────────────────────────────────
+    fun provideProfileImageRepository(
+        userProfileDao: UserProfileDao,
+        peerDao: PeerDao,
+    ): ProfileImageRepository = ProfileImageRepositoryImpl(userProfileDao, peerDao)
 
     @Provides @Singleton
     fun provideProfileImageProcessor(@ApplicationContext context: Context): ProfileImageProcessor =
@@ -87,8 +72,6 @@ object AppModule {
         storage: ProfileImageStorage,
         repository: ProfileImageRepository,
     ): ProfileImageUseCase = ProfileImageUseCase(processor, storage, repository)
-
-    // ── Network / Transport ────────────────────────────────────────
 
     @Provides @Singleton
     fun provideWifiDirectReceiver(): WifiDirectReceiver = WifiDirectReceiver()
@@ -109,8 +92,6 @@ object AppModule {
         lanTransport: LanTransport,
         wanTransport: WanTransport,
     ): TransportRouter = TransportRouterImpl(lanTransport, wanTransport)
-
-    // ── Domain ─────────────────────────────────────────────────────
 
     @Provides @Singleton
     fun provideSessionManager(
@@ -139,10 +120,7 @@ object AppModule {
 
     @Provides @Singleton
     fun provideProfileSyncHandler(
-        imageProcessor: ProfileImageProcessor,
-        imageStorage: ProfileImageStorage,
         transportRouter: TransportRouter,
-    ): ProfileSyncHandler = ProfileSyncHandler(
-        imageProcessor, imageStorage, transportRouter
-    )
+        profileRepository: ProfileImageRepository,
+    ): ProfileSyncHandler = ProfileSyncHandler(transportRouter, profileRepository)
 }

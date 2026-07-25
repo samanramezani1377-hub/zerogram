@@ -41,7 +41,6 @@ android {
 
     kotlinOptions {
         jvmTarget = "17"
-        freeCompilerArgs += "-Xconsistent-data-class-copy-visibility"
     }
 
     ksp {
