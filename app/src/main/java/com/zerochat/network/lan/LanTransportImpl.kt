@@ -22,11 +22,8 @@ import javax.inject.Singleton
 /**
  * LAN transport using TCP sockets + WiFi Direct + mDNS (with PIN codes).
  *
- * Protocol: raw TCP with a simple header:
- *   [64 bytes: sender fingerprint hex] [payload...]
- *
- * This lets the receiver identify which peer sent the data without
- * needing pre-configured routes.
+ * Protocol: 64-byte sender fingerprint prefix followed by payload.
+ * Receiver reads fingerprint first to identify the peer, then reads payload.
  */
 @Singleton
 class LanTransportImpl @Inject constructor(
