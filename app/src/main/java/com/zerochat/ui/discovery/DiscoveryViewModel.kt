@@ -65,11 +65,13 @@ class DiscoveryViewModel @Inject constructor(
     fun connectToPeer(peer: LanPeer) {
         viewModelScope.launch {
             try {
-                val fingerprint = peer.deviceId.ifBlank { peer.ipAddress }
-                transportRouter.connectLan(peer.ipAddress, peer.port, fingerprint)
+                // Use IP as fingerprint if deviceId is blank
+                val fingerprint = peer.deviceId.ifBlank { peer.ipAddress }.ifBlank { "lan_peer" }
 
-                // Save peer to contacts so it appears in the contacts list
+                // Save peer FIRST so it shows in contacts even if connection fails
                 savePeer(fingerprint, peer)
+
+                transportRouter.connectLan(peer.ipAddress, peer.port, fingerprint)
 
                 Timber.i("Connected to peer $fingerprint via LAN")
             } catch (e: Exception) {

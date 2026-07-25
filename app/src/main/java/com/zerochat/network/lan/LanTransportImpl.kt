@@ -217,8 +217,16 @@ class LanTransportImpl @Inject constructor(
                 socket.connect(InetSocketAddress(ipAddress, port), 5000)
                 val key = "$ipAddress:$port"
                 activeSockets[key] = socket
+
+                // Send fingerprint handshake immediately so receiver knows who connected
+                val fp = localFingerprint.take(FINGERPRINT_LEN)
+                    .padEnd(FINGERPRINT_LEN, '0')
+                    .toByteArray(Charsets.UTF_8)
+                socket.getOutputStream().write(fp)
+                socket.getOutputStream().flush()
+
                 _connectionState.value = LanConnectionState.CONNECTED
-                Timber.i("Connected to $ipAddress:$port")
+                Timber.i("Connected to $ipAddress:$port (handshake sent)")
                 true
             } catch (e: Exception) {
                 Timber.w(e, "Failed to connect to $ipAddress:$port")
@@ -230,21 +238,24 @@ class LanTransportImpl @Inject constructor(
     // ── Data transfer ───────────────────────────────────────────────
 
     /**
-     * Send data prefixed with local fingerprint so receiver can identify us.
+     * Send raw data — fingerprint already sent during connectDirect handshake.
      */
     override suspend fun sendDataTo(data: ByteArray, ipAddress: String, port: Int) {
         withContext(Dispatchers.IO) {
             val key = "$ipAddress:$port"
             val existingSocket = activeSockets[key]
 
-            val framed = buildFramedPayload(data)
-
             if (existingSocket != null && existingSocket.isConnected) {
-                sendToSocket(existingSocket, framed)
+                sendToSocket(existingSocket, data)
             } else {
+                // Short-lived connection: need to send fingerprint first, then data
                 Socket().use { socket ->
                     socket.connect(InetSocketAddress(ipAddress, port), 5000)
-                    sendToSocket(socket, framed)
+                    val fp = localFingerprint.take(FINGERPRINT_LEN)
+                        .padEnd(FINGERPRINT_LEN, '0')
+                        .toByteArray(Charsets.UTF_8)
+                    socket.getOutputStream().write(fp + data)
+                    socket.getOutputStream().flush()
                 }
                 Timber.d("Sent ${data.size}B to $ipAddress:$port (short-lived)")
             }
@@ -339,16 +350,6 @@ class LanTransportImpl @Inject constructor(
     }
 
     // ── Private helpers ─────────────────────────────────────────────
-
-    /**
-     * Prefix data with sender fingerprint: [64-byte fingerprint] [payload]
-     */
-    private fun buildFramedPayload(payload: ByteArray): ByteArray {
-        val fp = localFingerprint.take(FINGERPRINT_LEN)
-            .padEnd(FINGERPRINT_LEN, '0')
-            .toByteArray(Charsets.UTF_8)
-        return fp + payload
-    }
 
     /**
      * Handle incoming TCP connection: read fingerprint header, then payload.
