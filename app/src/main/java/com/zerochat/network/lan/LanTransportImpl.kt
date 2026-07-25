@@ -453,23 +453,24 @@ class LanTransportImpl @Inject constructor(
 
     override suspend fun resolvePinCode(pin: String): LanPeer? {
         return withContext(Dispatchers.IO) {
+            var localJmDNS: javax.jmdns.JmDNS? = null
             try {
                 val localIp = getLocalAddresses().firstOrNull() ?: return@withContext null
-                if (jmdns == null) {
-                    jmdns = javax.jmdns.JmDNS.create(InetAddress.getByName(localIp))
-                }
-
-                // List ALL services of our type
-                val services = jmdns?.list(MDNS_SERVICE_TYPE) ?: emptyArray()
-                Timber.d("PIN lookup: ${services.size} service(s) on network")
+                
+                // Use existing jmdns if available, otherwise create a temporary one
+                localJmDNS = jmdns ?: javax.jmdns.JmDNS.create(InetAddress.getByName(localIp))
 
                 val targetName = "ZG-PIN-$pin"
+                Timber.d("PIN lookup: searching for '$targetName'")
 
+                // First try: list already-resolved services (fast path)
+                var services = localJmDNS.list(MDNS_SERVICE_TYPE) ?: emptyArray()
+                Timber.d("PIN lookup: ${services.size} cached service(s) on network")
+                
                 for (svc in services) {
-                    Timber.d("  Found service: ${svc.name}")
+                    Timber.d("  Cached service: ${svc.name}")
                     if (svc.name == targetName || svc.name.contains(pin)) {
-                        // Resolve the service to get IP + port
-                        val info = jmdns?.getServiceInfo(MDNS_SERVICE_TYPE, svc.name, 3000)
+                        val info = localJmDNS.getServiceInfo(MDNS_SERVICE_TYPE, svc.name, 2000)
                         val addresses = info?.inetAddresses
                         if (addresses != null && addresses.isNotEmpty()) {
                             val addr = addresses.first()
@@ -480,16 +481,43 @@ class LanTransportImpl @Inject constructor(
                                 discoveryMethod = "pin",
                                 deviceId = svc.name,
                             )
-                            Timber.i("✓ PIN $pin resolved → ${peer.ipAddress}:${peer.port}")
+                            Timber.i("✓ PIN $pin resolved (cached) → ${peer.ipAddress}:${peer.port}")
                             return@withContext peer
                         }
                     }
                 }
-                Timber.w("PIN $pin not found (${services.size} services checked)")
+
+                // Second try: actively request service resolution (slower, but works for newly advertised services)
+                Timber.d("PIN lookup: requesting active resolution for '$targetName'")
+                val info = localJmDNS.getServiceInfo(MDNS_SERVICE_TYPE, targetName, 4000)
+                if (info != null) {
+                    val addresses = info.inetAddresses
+                    if (addresses != null && addresses.isNotEmpty()) {
+                        val addr = addresses.first()
+                        val peer = LanPeer(
+                            displayName = "PIN:$pin",
+                            ipAddress = addr.hostAddress ?: "0.0.0.0",
+                            port = info.port,
+                            discoveryMethod = "pin",
+                            deviceId = targetName,
+                        )
+                        Timber.i("✓ PIN $pin resolved (active) → ${peer.ipAddress}:${peer.port}")
+                        return@withContext peer
+                    }
+                }
+
+                Timber.w("PIN $pin not found (${services.size} cached + active query)")
                 null
             } catch (e: Exception) {
                 Timber.e(e, "PIN resolve failed")
                 throw e
+            } finally {
+                // Only close if we created a temporary one
+                if (jmdns == null && localJmDNS != null) {
+                    try {
+                        localJmDNS.close()
+                    } catch (_: Exception) {}
+                }
             }
         }
     }
