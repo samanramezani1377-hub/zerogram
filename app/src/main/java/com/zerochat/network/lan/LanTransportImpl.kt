@@ -48,7 +48,7 @@ class LanTransportImpl @Inject constructor(
         const val FINGERPRINT_LEN = 64
         private const val LENGTH_FIELD_SIZE = 4
         private const val MAX_PAYLOAD_SIZE = 1_048_576 // 1 MB
-        private const val SOCKET_TIMEOUT_MS = 30_000   // 30 seconds
+        private const val SOCKET_TIMEOUT_MS = 5_000   // 30 seconds
         private const val HEARTBEAT_INTERVAL_MS = 15_000 // 15 seconds
     }
 
@@ -296,7 +296,7 @@ class LanTransportImpl @Inject constructor(
             try {
                 val socket = Socket()
                 socket.soTimeout = SOCKET_TIMEOUT_MS
-                socket.connect(InetSocketAddress(ipAddress, port), 5000)
+                socket.connect(InetSocketAddress(ipAddress, port), 1500)
 
                 val key = "$ipAddress:$port"
                 activeSockets[key] = socket
@@ -333,7 +333,7 @@ class LanTransportImpl @Inject constructor(
                 // Short-lived connection
                 Socket().use { socket ->
                     socket.soTimeout = SOCKET_TIMEOUT_MS
-                    socket.connect(InetSocketAddress(ipAddress, port), 5000)
+                    socket.connect(InetSocketAddress(ipAddress, port), 1500)
 
                     // Send fingerprint, then framed data
                     sendFingerprint(socket)

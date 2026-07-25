@@ -9,8 +9,10 @@ import com.zerochat.network.lan.LanPeer
 import com.zerochat.network.lan.LanTransport
 import com.zerochat.network.transport.TransportRouter
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import timber.log.Timber
 import javax.inject.Inject
 
@@ -18,8 +20,6 @@ data class DiscoveryUiState(
     val peers: List<LanPeer> = emptyList(),
     val isDiscovering: Boolean = true,
     val error: String? = null,
-
-    // ── PIN code ──────────────────────────────────────────────────
     val myPinCode: String = "",
     val isAdvertisingPin: Boolean = false,
     val lookupPin: String = "",
@@ -38,41 +38,36 @@ class DiscoveryViewModel @Inject constructor(
     val uiState: StateFlow<DiscoveryUiState> = _uiState.asStateFlow()
 
     init {
-        startDiscovery()
+        // Start discovery on IO thread so UI is never blocked
+        viewModelScope.launch(Dispatchers.IO) {
+            startWiFiDiscovery()
+        }
         observeDiscoveredPeers()
         generatePinCode()
     }
 
-    // ── WiFi / mDNS Discovery ────────────────────────────────────
-
-    /**
-     * Start discovery. Safe to call multiple times — restarts services
-     * if already running.
-     *
-     * Called once on screen open, and again when user taps refresh.
-     * Discovery runs continuously in the background (WiFi Direct scans
-     * every ~10s via LanTransportImpl.discoverPeersPeriodic).
-     * The Flow from lanTransport.discoveredPeers() updates the UI
-     * reactively whenever peers change.
-     */
-    fun startDiscovery() {
-        viewModelScope.launch {
-            _uiState.update { it.copy(isDiscovering = true, error = null) }
-            try {
-                lanTransport.stopWiFiDirectDiscovery()
-                lanTransport.startWiFiDirectDiscovery()
-                lanTransport.stopMdnsDiscovery()
-                lanTransport.startMdnsDiscovery()
-            } catch (e: Exception) {
-                _uiState.update {
-                    it.copy(error = e.message, isDiscovering = false)
-                }
+    private suspend fun startWiFiDiscovery() = withContext(Dispatchers.IO) {
+        try {
+            lanTransport.stopWiFiDirectDiscovery()
+            lanTransport.startWiFiDirectDiscovery()
+            lanTransport.stopMdnsDiscovery()
+            lanTransport.startMdnsDiscovery()
+        } catch (e: Exception) {
+            _uiState.update {
+                it.copy(error = e.message, isDiscovering = false)
             }
         }
     }
 
+    fun startDiscovery() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.update { it.copy(isDiscovering = true, error = null) }
+            startWiFiDiscovery()
+        }
+    }
+
     fun connectToPeer(peer: LanPeer) {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             try {
                 val fingerprint = resolveFingerprint(peer)
                 savePeer(fingerprint, peer)
@@ -87,15 +82,11 @@ class DiscoveryViewModel @Inject constructor(
     }
 
     fun connectManually(peerIdOrIp: String) {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             try {
                 val ipPattern = Regex("\\d+\\.\\d+\\.\\d+\\.\\d+")
                 if (ipPattern.matches(peerIdOrIp)) {
-                    transportRouter.connectLan(
-                        peerIdOrIp,
-                        Peer.DEFAULT_PORT,
-                        peerIdOrIp,
-                    )
+                    transportRouter.connectLan(peerIdOrIp, Peer.DEFAULT_PORT, peerIdOrIp)
                     Timber.i("Manual connection to $peerIdOrIp")
                 } else {
                     _uiState.update {
@@ -110,112 +101,73 @@ class DiscoveryViewModel @Inject constructor(
         }
     }
 
-    // ── PIN Code ─────────────────────────────────────────────────
-
     private fun generatePinCode() {
         val pin = lanTransport.getOrCreatePinCode()
         _uiState.update { it.copy(myPinCode = pin, isAdvertisingPin = true) }
     }
 
     fun startPinAdvertising() {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             try {
                 lanTransport.advertisePinCode()
                 _uiState.update { it.copy(isAdvertisingPin = true, error = null) }
             } catch (e: Exception) {
-                _uiState.update {
-                    it.copy(error = "Failed to advertise: ${e.message}")
-                }
+                _uiState.update { it.copy(error = "Failed to advertise: ${e.message}") }
             }
         }
     }
 
     fun lookupPinCode(pin: String) {
         if (pin.length != 8 || !pin.all { it.isDigit() }) {
-            _uiState.update {
-                it.copy(error = "PIN must be exactly 8 digits")
-            }
+            _uiState.update { it.copy(error = "PIN must be exactly 8 digits") }
             return
         }
 
-        viewModelScope.launch {
-            _uiState.update {
-                it.copy(isLookingUp = true, error = null, resolvedPeer = null)
-            }
-
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.update { it.copy(isLookingUp = true, error = null, resolvedPeer = null) }
             try {
                 val peer = lanTransport.resolvePinCode(pin)
                 if (peer != null) {
-                    _uiState.update {
-                        it.copy(
-                            isLookingUp = false,
-                            resolvedPeer = peer,
-                            lookupPin = pin,
-                        )
-                    }
+                    _uiState.update { it.copy(isLookingUp = false, resolvedPeer = peer, lookupPin = pin) }
                     connectToPeer(peer)
                 } else {
                     _uiState.update {
-                        it.copy(
-                            isLookingUp = false,
-                            error = "No device found with PIN $pin. " +
-                                    "Make sure both devices are on the same WiFi network.",
-                        )
+                        it.copy(isLookingUp = false,
+                            error = "No device found with PIN $pin. Make sure both devices are on the same WiFi network.")
                     }
                 }
             } catch (e: Exception) {
-                _uiState.update {
-                    it.copy(
-                        isLookingUp = false,
-                        error = "PIN lookup failed: ${e.message}",
-                    )
-                }
+                _uiState.update { it.copy(isLookingUp = false, error = "PIN lookup failed: ${e.message}") }
             }
         }
     }
 
     fun updateLookupPin(pin: String) {
-        _uiState.update {
-            it.copy(
-                lookupPin = pin.take(8).filter { it.isDigit() },
-                resolvedPeer = null,
-            )
-        }
+        _uiState.update { it.copy(lookupPin = pin.take(8).filter { it.isDigit() }, resolvedPeer = null) }
     }
 
     fun resolveFingerprint(peer: LanPeer): String {
         val deviceId = peer.deviceId.trim()
-        if (deviceId.isNotEmpty() &&
-            !deviceId.matches(Regex("[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}"))
-        ) {
+        if (deviceId.isNotEmpty() && !deviceId.matches(Regex("[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}"))) {
             return deviceId
         }
         return peer.ipAddress.ifBlank { "lan_peer" }
     }
 
-    // ── Private ──────────────────────────────────────────────────
-
-    private suspend fun savePeer(fingerprint: String, peer: LanPeer) {
+    private suspend fun savePeer(fingerprint: String, peer: LanPeer) = withContext(Dispatchers.IO) {
         try {
             val existing = peerRepository.getPeer(fingerprint)
             if (existing == null) {
-                val newPeer = Peer(
+                peerRepository.savePeer(Peer(
                     fingerprint = fingerprint,
                     displayName = peer.displayName.ifBlank { peer.ipAddress },
-                    ipAddress = peer.ipAddress,
-                    port = peer.port,
+                    ipAddress = peer.ipAddress, port = peer.port,
                     preferredTransport = TransportMode.LAN,
                     lastSeen = System.currentTimeMillis(),
-                )
-                peerRepository.savePeer(newPeer)
+                ))
                 Timber.i("Peer saved to contacts: $fingerprint")
             } else {
-                peerRepository.updateConnectionInfo(
-                    fingerprint = fingerprint,
-                    ipAddress = peer.ipAddress,
-                    transport = TransportMode.LAN,
-                    timestamp = System.currentTimeMillis(),
-                )
+                peerRepository.updateConnectionInfo(fingerprint, peer.ipAddress, TransportMode.LAN, System.currentTimeMillis())
             }
         } catch (e: Exception) {
             Timber.w(e, "Failed to save peer $fingerprint")
@@ -225,9 +177,7 @@ class DiscoveryViewModel @Inject constructor(
     private fun observeDiscoveredPeers() {
         viewModelScope.launch {
             lanTransport.discoveredPeers().collect { peers ->
-                _uiState.update {
-                    it.copy(peers = peers, isDiscovering = false)
-                }
+                _uiState.update { it.copy(peers = peers, isDiscovering = false) }
             }
         }
     }
