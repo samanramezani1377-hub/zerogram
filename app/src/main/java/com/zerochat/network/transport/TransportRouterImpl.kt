@@ -135,24 +135,22 @@ class TransportRouterImpl @Inject constructor(
      * Tries TCP connection first (3s timeout). Only registers the route
      * on success. The fingerprint is used as the stable peer identifier.
      */
-    override suspend fun connectLan(ipAddress: String, port: Int, peerFingerprint: String) {
-        val connected = lanTransport.connectDirect(ipAddress, port)
-        if (!connected) {
-            throw RuntimeException(
-                "Can't reach $peerFingerprint at $ipAddress:$port.\n\n" +
-                        "Make sure:\n" +
-                        "• Both devices are on the same WiFi\n" +
-                        "• ZeroGram is open on both devices\n" +
-                        "• The other device shows 'Listening on port $port'"
+    override suspend fun connectLan(ipAddress: String, port: Int, peerFingerprint: String): String {
+        val actualFingerprint = lanTransport.connectDirect(ipAddress, port)
+            ?: throw RuntimeException(
+                "Can$'t reach $peerFingerprint at $ipAddress:$port.\n\n" +
+                "Make sure both devices are on the same WiFi and ZeroGram is open."
             )
-        }
 
-        peerRoutes[peerFingerprint] = PeerRoute(
-            fingerprint = peerFingerprint,
+        peerRoutes[actualFingerprint] = PeerRoute(
+            fingerprint = actualFingerprint,
             transportMode = TransportMode.LAN,
             lanEndpoint = Pair(ipAddress, port),
         )
-        Timber.i("✓ Route registered: $peerFingerprint → $ipAddress:$port [LAN]")
+
+        Timber.i("✓ Route: $actualFingerprint → $ipAddress:$port [LAN]")
+        actualFingerprint
+    }
     }
 
     override suspend fun connectWan(peerFingerprint: String): WanConnectionOffer {

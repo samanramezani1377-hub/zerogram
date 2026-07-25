@@ -311,20 +311,16 @@ class LanTransportImpl @Inject constructor(
 
     // ═══════════════════════════════════════════════════════════════
     // CONNECTION
-    // ═══════════════════════════════════════════════════════════════
-
-    override suspend fun connectDirect(ipAddress: String, port: Int): Boolean {
+    override suspend fun connectDirect(ipAddress: String, port: Int): String? {
         return withContext(Dispatchers.IO) {
             try {
-                // Skip if we already have an active socket to this peer
                 val key = "$ipAddress:$port"
                 val existing = activeSockets[key]
                 if (existing != null && existing.isConnected && !existing.isClosed) {
                     Timber.d("Already connected to $key")
-                    return@withContext true
+                    return@withContext null
                 }
 
-                // Remove any dead socket
                 activeSockets.remove(key)
 
                 val socket = Socket()
@@ -332,23 +328,32 @@ class LanTransportImpl @Inject constructor(
                 socket.tcpNoDelay = true
                 socket.connect(InetSocketAddress(ipAddress, port), 3000)
 
-                // Send our fingerprint first (client sends first)
                 sendFingerprint(socket)
+                socket.soTimeout = 3000  // Short timeout for reading server response
+                val input = socket.getInputStream()
+                val fpBuf = readExact(input, FINGERPRINT_LEN)
+                socket.soTimeout = SOCKET_TIMEOUT_MS  // Restore normal timeout
+
+                val remoteFingerprint = if (fpBuf != null) {
+                    String(fpBuf, Charsets.UTF_8).trimEnd('0')
+                } else {
+                    Timber.w("No fingerprint response from $ipAddress:$port")
+                    ipAddress  // Fallback to IP
+                }
+
+                Timber.i("✓ Connected to $ipAddress:$port — remote fp: $remoteFingerprint")
 
                 _connectionState.value = LanConnectionState.CONNECTED
-                Timber.i("✓ Connected to $ipAddress:$port")
-
                 activeSockets[key] = socket
 
-                // Background reader for incoming messages from this peer
                 serverScope.launch {
                     readFromConnectedSocket(socket, key, ipAddress)
                 }
 
-                true
+                remoteFingerprint
             } catch (e: Exception) {
                 Timber.w(e, "Failed to connect to $ipAddress:$port")
-                false
+                null
             }
         }
     }
@@ -581,6 +586,7 @@ class LanTransportImpl @Inject constructor(
         }
     }
 
+
     private suspend fun readFromConnectedSocket(
         socket: Socket,
         key: String,
@@ -589,19 +595,10 @@ class LanTransportImpl @Inject constructor(
         try {
             val input = socket.getInputStream()
 
-            // Server will respond with its fingerprint after we sent ours
-            val fpBuf = readExact(input, FINGERPRINT_LEN)
-            val fingerprint = if (fpBuf != null) {
-                String(fpBuf, Charsets.UTF_8).trimEnd('0')
-            } else {
-                "unknown"
-            }
-            Timber.i("✓ Server fingerprint: $fingerprint")
-
             while (isActive && !socket.isClosed) {
                 val data = readFramedMessage(input) ?: break
-                _incomingData.send(LanIncoming(fingerprint, data, senderIp))
-                Timber.d("← ${data.size}B from $fingerprint")
+                _incomingData.send(LanIncoming(senderIp, data, senderIp))
+                Timber.d("← ${data.size}B from $senderIp")
             }
         } catch (_: SocketTimeoutException) {
             Timber.d("Idle timeout: $key")
@@ -616,7 +613,6 @@ class LanTransportImpl @Inject constructor(
             runCatching { socket.close() }
         }
     }
-
     // ═══════════════════════════════════════════════════════════════
     // PRIVATE: Discovery Helpers
     // ═══════════════════════════════════════════════════════════════

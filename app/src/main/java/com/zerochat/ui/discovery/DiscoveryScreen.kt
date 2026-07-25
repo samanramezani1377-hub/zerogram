@@ -24,6 +24,9 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.zerochat.network.lan.LanPeer
 
+
+import androidx.compose.runtime.LaunchedEffect
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DiscoveryScreen(
@@ -35,6 +38,13 @@ fun DiscoveryScreen(
     var selectedTab by remember { mutableIntStateOf(0) }
     var showAddPeerDialog by remember { mutableStateOf(false) }
     var manualPeerId by remember { mutableStateOf("") }
+
+    // Navigate to chat when connection succeeds
+    LaunchedEffect(uiState.connectedPeerFingerprint) {
+        uiState.connectedPeerFingerprint?.let { fp ->
+            onPeerSelected(fp)
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -249,9 +259,9 @@ private fun ScanTab(
                 items(uiState.peers, key = { it.deviceId + it.ipAddress }) { peer ->
                     DiscoveredPeerItem(
                         peer = peer,
-                        onClick = {
-                            val fp = viewModel.resolveFingerprint(peer)
-                            onPeerSelected(fp)
+                         onClick = {
+                            
+                            
                         },
                         onConnect = { viewModel.connectToPeer(peer) },
                     )

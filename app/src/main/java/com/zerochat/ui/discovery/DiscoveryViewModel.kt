@@ -18,6 +18,7 @@ import javax.inject.Inject
 
 data class DiscoveryUiState(
     val peers: List<LanPeer> = emptyList(),
+    val connectedPeerFingerprint: String? = null,
     val isDiscovering: Boolean = true,
     val error: String? = null,
     val myPinCode: String = "",
@@ -60,28 +61,20 @@ class DiscoveryViewModel @Inject constructor(
     fun connectToPeer(peer: LanPeer) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val fingerprint = resolveFingerprint(peer)
-
-                // Use the real IP from the discovered peer (mDNS gives this)
                 val ip = peer.ipAddress.ifBlank {
                     _uiState.update { it.copy(error = "No IP address for this peer. Try again.") }
                     return@launch
                 }
-
                 val port = if (peer.port > 0) peer.port else com.zerochat.network.lan.LanTransportImpl.DEFAULT_PORT
 
-                // Connect via transport router
-                transportRouter.connectLan(ip, port, fingerprint)
+                val actualFingerprint = transportRouter.connectLan(ip, port, resolveFingerprint(peer))
 
-                // Save to contacts
-                savePeer(fingerprint, peer, ip, port)
-
+                savePeer(actualFingerprint, peer, ip, port)
                 _uiState.update { it.copy(error = null) }
-                Timber.i("Connected to $fingerprint ($ip:$port)")
+                _uiState.update { it.copy(connectedPeerFingerprint = actualFingerprint, error = null) }
+                Timber.i("Connected: $actualFingerprint ($ip:$port)")
             } catch (e: Exception) {
-                _uiState.update {
-                    it.copy(error = e.message ?: "Connection failed")
-                }
+                _uiState.update { it.copy(error = e.message ?: "Connection failed") }
             }
         }
     }

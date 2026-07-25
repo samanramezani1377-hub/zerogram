@@ -60,7 +60,7 @@ interface TransportRouter {
     fun currentMode(peerFingerprint: String): TransportMode
 
     /** Establish a LAN connection to a peer */
-    suspend fun connectLan(ipAddress: String, port: Int, peerFingerprint: String)
+    suspend fun connectLan(ipAddress: String, port: Int, peerFingerprint: String): String
 
     /** Create a WAN (WebRTC) connection offer */
     suspend fun connectWan(peerFingerprint: String): WanConnectionOffer

@@ -14,64 +14,37 @@ import kotlinx.coroutines.flow.Flow
  */
 interface LanTransport {
 
-    // ── Lifecycle ──────────────────────────────────────────────────
-
     fun startListening()
     fun stopListening()
-
-    /** Set the local device fingerprint for use in protocol header */
     fun setLocalFingerprint(fingerprint: String)
-
-    // ── Discovery ──────────────────────────────────────────────────
 
     fun startWiFiDirectDiscovery()
     fun stopWiFiDirectDiscovery()
     fun startMdnsDiscovery()
     fun stopMdnsDiscovery()
 
-    /** Flow of discovered LAN peers */
     fun discoveredPeers(): Flow<List<LanPeer>>
-
-    // ── Connection ─────────────────────────────────────────────────
 
     /**
      * Connect directly to a peer at the given IP and port.
-     * @return true if the connection was established
+     * The connection exchanges fingerprints in both directions.
+     * @return the remote peer's fingerprint on success, null on failure
      */
-    suspend fun connectDirect(ipAddress: String, port: Int): Boolean
+    suspend fun connectDirect(ipAddress: String, port: Int): String?
 
-    /** Current LAN connection state */
     fun connectionState(): Flow<LanConnectionState>
 
-    // ── Data transfer ──────────────────────────────────────────────
-
-    /**
-     * Send data to a specific peer identified by IP and port.
-     * Automatically prefixes data with local fingerprint header.
-     */
     suspend fun sendDataTo(data: ByteArray, ipAddress: String, port: Int)
 
-    /**
-     * Flow of incoming data from any connected LAN peer.
-     * Includes peer fingerprint, payload, and sender IP.
-     */
     fun incomingData(): Flow<LanIncoming>
 
-    // ── Utility ────────────────────────────────────────────────────
-
-    /** Get local IP addresses of this device */
     suspend fun getLocalAddresses(): List<String>
-
-    // ── PIN Code (8-digit) ────────────────────────────────────────
 
     fun getOrCreatePinCode(): String
     suspend fun advertisePinCode()
     suspend fun resolvePinCode(pin: String): LanPeer?
 }
 
-/**
- * Incoming data from a LAN peer, with resolved fingerprint.
- */
 data class LanIncoming(
     val peerFingerprint: String,
     val payload: ByteArray,
