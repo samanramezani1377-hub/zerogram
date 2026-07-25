@@ -46,7 +46,6 @@ fun DiscoveryScreen(
                     }
                 },
                 actions = {
-                    // Refresh button — force rescan
                     IconButton(onClick = { viewModel.startDiscovery() }) {
                         Icon(Icons.Default.Refresh, contentDescription = "Refresh")
                     }
@@ -62,7 +61,6 @@ fun DiscoveryScreen(
                 .fillMaxSize()
                 .padding(paddingValues),
         ) {
-            // Tab Row
             TabRow(selectedTabIndex = selectedTab) {
                 Tab(
                     selected = selectedTab == 0,
@@ -78,7 +76,6 @@ fun DiscoveryScreen(
                 )
             }
 
-            // Error banner
             AnimatedVisibility(
                 visible = uiState.error != null,
                 enter = fadeIn(),
@@ -101,7 +98,6 @@ fun DiscoveryScreen(
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             text = uiState.error ?: "",
-                            maxLines = 5,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onErrorContainer,
                             modifier = Modifier.weight(1f),
@@ -110,7 +106,6 @@ fun DiscoveryScreen(
                 }
             }
 
-            // Manual IP entry dialog
             if (showAddPeerDialog) {
                 AlertDialog(
                     onDismissRequest = { showAddPeerDialog = false },
@@ -120,7 +115,7 @@ fun DiscoveryScreen(
                             value = manualPeerId,
                             onValueChange = { manualPeerId = it },
                             label = { Text("Peer ID or IP Address") },
-                            placeholder = { Text("e.g. ZC:abc123… or 192.168.1.5") },
+                            placeholder = { Text("e.g. ZC:abc123 or 192.168.1.5") },
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth(),
                         )
@@ -133,14 +128,13 @@ fun DiscoveryScreen(
                         }) { Text("Connect") }
                     },
                     dismissButton = {
-                        TextButton(onClick = {
-                            showAddPeerDialog = false
-                        }) { Text("Cancel") }
+                        TextButton(onClick = { showAddPeerDialog = false }) {
+                            Text("Cancel")
+                        }
                     }
                 )
             }
 
-            // Tab Content
             when (selectedTab) {
                 0 -> ScanTab(uiState, viewModel, onPeerSelected)
                 1 -> PinCodeTab(uiState, viewModel)
@@ -149,10 +143,6 @@ fun DiscoveryScreen(
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// Tab 0: WiFi / mDNS scan
-// ═══════════════════════════════════════════════════════════════════
-
 @Composable
 private fun ScanTab(
     uiState: DiscoveryUiState,
@@ -160,7 +150,6 @@ private fun ScanTab(
     onPeerSelected: (String) -> Unit,
 ) {
     when {
-        // Only show spinner on FIRST load — silent refresh doesn't set isDiscovering
         uiState.isDiscovering && uiState.peers.isEmpty() -> {
             Box(
                 modifier = Modifier.fillMaxSize(),
@@ -175,7 +164,7 @@ private fun ScanTab(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-"Make sure WiFi is enabled on both devices",
+                        "Make sure WiFi is enabled on both devices",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -202,7 +191,7 @@ private fun ScanTab(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-"Make sure WiFi is enabled on both devices",
+                        "Make sure WiFi is enabled on both devices",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -272,10 +261,6 @@ private fun ScanTab(
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// Tab 1: PIN Code
-// ═══════════════════════════════════════════════════════════════════
-
 @Composable
 private fun PinCodeTab(
     uiState: DiscoveryUiState,
@@ -286,7 +271,6 @@ private fun PinCodeTab(
             .fillMaxSize()
             .padding(16.dp),
     ) {
-        // My PIN
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(
@@ -332,7 +316,7 @@ private fun PinCodeTab(
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            "Broadcasting…",
+                            "Broadcasting...",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onPrimaryContainer,
                         )
@@ -351,7 +335,6 @@ private fun PinCodeTab(
         HorizontalDivider()
         Spacer(modifier = Modifier.height(24.dp))
 
-        // Enter Other's PIN
         Text(
             "Enter Other Device's Code",
             style = MaterialTheme.typography.titleMedium,
@@ -403,7 +386,7 @@ private fun PinCodeTab(
                     color = MaterialTheme.colorScheme.onPrimary,
                 )
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("Searching…")
+                Text("Searching...")
             } else {
                 Icon(Icons.Default.Search, contentDescription = null)
                 Spacer(modifier = Modifier.width(8.dp))
@@ -411,7 +394,6 @@ private fun PinCodeTab(
             }
         }
 
-        // Resolved peer info
         AnimatedVisibility(visible = uiState.resolvedPeer != null) {
             uiState.resolvedPeer?.let { peer ->
                 Spacer(modifier = Modifier.height(16.dp))

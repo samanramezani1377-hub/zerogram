@@ -12,8 +12,8 @@ import com.zerochat.data.model.UserProfile
         Peer::class,
         UserProfile::class,
     ],
-    version = 2,
-    exportSchema = true,
+    version = 1,
+    exportSchema = false,
 )
 abstract class ZeroChatDatabase : RoomDatabase() {
     abstract fun messageDao(): MessageDao
