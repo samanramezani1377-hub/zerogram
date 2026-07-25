@@ -11,68 +11,96 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 
-// ── Brand Colors — ZeroGram identity palette ────────────────────────
+// ── Telegram-Inspired Colors ────────────────────────────────────────
 
-private val LightTeal = Color(0xFF006D5B)
-private val OnLightTeal = Color(0xFFFFFFFF)
-private val LightTealContainer = Color(0xFFA7F2DD)
-private val OnLightTealContainer = Color(0xFF002019)
+val TelegramBlue = Color(0xFF2AABEE)
+val TelegramBlueDark = Color(0xFF1C93D6)
+val TelegramBlueLight = Color(0xFF4FC3F7)
+val TelegramBlueSurface = Color(0xFFE3F2FD)
 
-private val DarkTeal = Color(0xFF8CD5C5)
-private val OnDarkTeal = Color(0xFF00382D)
-private val DarkTealContainer = Color(0xFF005143)
-private val OnDarkTealContainer = Color(0xFFA7F2DD)
+val TelegramDarkBg = Color(0xFF0E1621)
+val TelegramDarkSurface = Color(0xFF182533)
+val TelegramDarkCard = Color(0xFF1F2D3E)
+val TelegramDarkInput = Color(0xFF253548)
 
-private val LightAccent = Color(0xFF7C5800)
-private val OnLightAccent = Color(0xFFFFFFFF)
-private val LightAccentContainer = Color(0xFFFFDEA6)
-private val OnLightAccentContainer = Color(0xFF271900)
+val TelegramGreen = Color(0xFF4CAF50)
+val TelegramGreenLight = Color(0xFF81C784)
+val TelegramRed = Color(0xFFE53935)
+val TelegramOrange = Color(0xFFFF9800)
 
-private val DarkAccent = Color(0xFFEFC04B)
-private val OnDarkAccent = Color(0xFF412D00)
-private val DarkAccentContainer = Color(0xFF5E4300)
-private val OnDarkAccentContainer = Color(0xFFFFDEA6)
+val TelegramWhite = Color(0xFFFFFFFF)
+val TelegramBlack = Color(0xFF000000)
+val TelegramGray = Color(0xFF8E99A4)
+val TelegramDivider = Color(0xFFE0E0E0)
+val TelegramDarkDivider = Color(0xFF2A3A4A)
 
-private val LightError = Color(0xFFBA1A1A)
-private val OnLightError = Color(0xFFFFFFFF)
-private val LightErrorContainer = Color(0xFFFFDAD6)
-private val OnLightErrorContainer = Color(0xFF410002)
+val TelegramMsgBlue = Color(0xFF2AABEE)
+val TelegramMsgGreen = Color(0xFFE0F7FA)
+val TelegramMsgBlueDark = Color(0xFF1A6D96)
+val TelegramMsgGreenDark = Color(0xFF1A3A3C)
 
-private val DarkError = Color(0xFFFFB4AB)
-private val OnDarkError = Color(0xFF690005)
-private val DarkErrorContainer = Color(0xFF93000A)
-private val OnDarkErrorContainer = Color(0xFFFFDAD6)
-
-// ── Color Schemes ──────────────────────────────────────────────────
+// ── Light Color Scheme ─────────────────────────────────────────────
 
 private val LightColorScheme = lightColorScheme(
-    primary = LightTeal,
-    onPrimary = OnLightTeal,
-    primaryContainer = LightTealContainer,
-    onPrimaryContainer = OnLightTealContainer,
-    secondary = LightAccent,
-    onSecondary = OnLightAccent,
-    secondaryContainer = LightAccentContainer,
-    onSecondaryContainer = OnLightAccentContainer,
-    error = LightError,
-    onError = OnLightError,
-    errorContainer = LightErrorContainer,
-    onErrorContainer = OnLightErrorContainer,
+    primary = TelegramBlue,
+    onPrimary = TelegramWhite,
+    primaryContainer = TelegramBlueSurface,
+    onPrimaryContainer = Color(0xFF003548),
+    secondary = TelegramGreen,
+    onSecondary = TelegramWhite,
+    secondaryContainer = Color(0xFFC8E6C9),
+    onSecondaryContainer = Color(0xFF1B5E20),
+    tertiary = TelegramOrange,
+    onTertiary = TelegramWhite,
+    tertiaryContainer = Color(0xFFFFF3E0),
+    onTertiaryContainer = Color(0xFFE65100),
+    error = TelegramRed,
+    onError = TelegramWhite,
+    errorContainer = Color(0xFFFFCDD2),
+    onErrorContainer = Color(0xFFB71C1C),
+    background = Color(0xFFF5F5F5),
+    onBackground = Color(0xFF1C1C1E),
+    surface = TelegramWhite,
+    onSurface = Color(0xFF1C1C1E),
+    surfaceVariant = Color(0xFFF0F0F0),
+    onSurfaceVariant = Color(0xFF707579),
+    outline = Color(0xFFC4C4C6),
+    outlineVariant = Color(0xFFE5E5EA),
+    inverseSurface = Color(0xFF2C2C2E),
+    inverseOnSurface = Color(0xFFF2F2F7),
+    inversePrimary = TelegramBlueLight,
 )
 
+// ── Dark Color Scheme ──────────────────────────────────────────────
+
 private val DarkColorScheme = darkColorScheme(
-    primary = DarkTeal,
-    onPrimary = OnDarkTeal,
-    primaryContainer = DarkTealContainer,
-    onPrimaryContainer = OnDarkTealContainer,
-    secondary = DarkAccent,
-    onSecondary = OnDarkAccent,
-    secondaryContainer = DarkAccentContainer,
-    onSecondaryContainer = OnDarkAccentContainer,
-    error = DarkError,
-    onError = OnDarkError,
-    errorContainer = DarkErrorContainer,
-    onErrorContainer = OnDarkErrorContainer,
+    primary = TelegramBlue,
+    onPrimary = TelegramWhite,
+    primaryContainer = Color(0xFF003548),
+    onPrimaryContainer = TelegramBlueSurface,
+    secondary = TelegramGreenLight,
+    onSecondary = Color(0xFF1B5E20),
+    secondaryContainer = Color(0xFF1B5E20),
+    onSecondaryContainer = Color(0xFFC8E6C9),
+    tertiary = TelegramOrange,
+    onTertiary = Color(0xFFE65100),
+    tertiaryContainer = Color(0xFF4E342E),
+    onTertiaryContainer = Color(0xFFFFF3E0),
+    error = Color(0xFFFF6B6B),
+    onError = Color(0xFFB71C1C),
+    errorContainer = Color(0xFF4E1515),
+    onErrorContainer = Color(0xFFFFCDD2),
+    background = TelegramDarkBg,
+    onBackground = Color(0xFFE5E5EA),
+    surface = TelegramDarkSurface,
+    onSurface = Color(0xFFE5E5EA),
+    surfaceVariant = TelegramDarkCard,
+    onSurfaceVariant = Color(0xFF8E99A4),
+    outline = Color(0xFF3A4A5A),
+    outlineVariant = TelegramDarkDivider,
+    inverseSurface = Color(0xFFE5E5EA),
+    inverseOnSurface = Color(0xFF1C1C1E),
+    inversePrimary = TelegramBlue,
 )
 
 // ── Dynamic Color ──────────────────────────────────────────────────
@@ -83,7 +111,7 @@ private fun supportsDynamicColor() = Build.VERSION.SDK_INT >= Build.VERSION_CODE
 @Composable
 fun ZeroGramTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    dynamicColor: Boolean = true,
+    dynamicColor: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val colorScheme = when {
@@ -102,6 +130,11 @@ fun ZeroGramTheme(
             val window = (view.context as android.app.Activity).window
             WindowCompat.getInsetsController(window, view)
                 .isAppearanceLightStatusBars = !darkTheme
+            window.statusBarColor = android.graphics.Color.TRANSPARENT
+            window.navigationBarColor = if (darkTheme)
+                android.graphics.Color.parseColor("#FF182533")
+            else
+                android.graphics.Color.parseColor("#FFFFFFFF")
         }
     }
 
