@@ -160,7 +160,7 @@ class WanSignalingManager @Inject constructor(
             signalingClient.sendSdp(offer.offerSdp, "offer")
 
             // Also send any ICE candidates that were generated during offer creation
-            launch {
+            scope.launch {
                 collectAndSendIceCandidates()
             }
 
@@ -182,7 +182,7 @@ class WanSignalingManager @Inject constructor(
                 "offer" -> {
                     val answer = transportRouter.acceptWanConnection("wan_peer", sdp)
                     signalingClient.sendSdp(answer, "answer")
-                    launch { collectAndSendIceCandidates() }
+                    scope.launch { collectAndSendIceCandidates() }
                     _connectState.value = WanConnectState(
                         status = WanConnectStatus.EXCHANGING_KEYS,
                         myPosition = _connectState.value.myPosition,
