@@ -194,10 +194,21 @@ class TransportRouterImpl @Inject constructor(
 
     private fun resolveLanFingerprint(incoming: LanIncoming): String {
         val fp = incoming.peerFingerprint
-        if (fp.isNotBlank() && fp != "unknown") return fp
-        return peerRoutes.entries
-            .firstOrNull { it.value.lanEndpoint?.first == incoming.senderIp }?.key
-            ?: "lan_${incoming.senderIp}"
+        if (fp.isNotBlank() && fp != "unknown") {
+            Timber.d("Fingerprint from handshake: $fp (sender=${incoming.senderIp})")
+            return fp
+        }
+        // Fallback: try to match by IP
+        val match = peerRoutes.entries
+            .firstOrNull { it.value.lanEndpoint?.first == incoming.senderIp }
+        if (match != null) {
+            Timber.d("Fingerprint resolved by IP: ${match.key} (sender=${incoming.senderIp})")
+            return match.key
+        }
+        // Last resort
+        val fallback = "lan_${incoming.senderIp.replace(".", "_")}"
+        Timber.w("Using fallback fingerprint: $fallback (sender=${incoming.senderIp})")
+        return fallback
     }
 
     private fun resolveWanFingerprint(peerLabel: String): String {
@@ -206,13 +217,18 @@ class TransportRouterImpl @Inject constructor(
     }
 
     private fun registerLanRoute(fingerprint: String, senderIp: String) {
-        if (!peerRoutes.containsKey(fingerprint)) {
-            val port = LanTransportImpl.DEFAULT_PORT
-            peerRoutes[fingerprint] = PeerRoute(
-                fingerprint = fingerprint,
-                transportMode = TransportMode.LAN,
-                lanEndpoint = Pair(senderIp, port),
-            )
+        val port = LanTransportImpl.DEFAULT_PORT
+        val isNew = !peerRoutes.containsKey(fingerprint)
+        val existingRoute = peerRoutes[fingerprint]
+        
+        // Always update/create the route with latest endpoint
+        peerRoutes[fingerprint] = PeerRoute(
+            fingerprint = fingerprint,
+            transportMode = TransportMode.LAN,
+            lanEndpoint = Pair(senderIp, port),
+        )
+        
+        if (isNew) {
             Timber.i("✓ Auto-route registered for incoming $fingerprint @ $senderIp:$port")
 
             // Auto-save peer so the receiver can see the sender in Contacts
@@ -251,6 +267,9 @@ class TransportRouterImpl @Inject constructor(
                     Timber.w(e, "Failed to auto-save peer $fingerprint")
                 }
             }
+        } else {
+            // Route already exists — just log that we received from a known peer
+            Timber.d("Route already exists for $fingerprint @ $senderIp:$port")
         }
     }
 
