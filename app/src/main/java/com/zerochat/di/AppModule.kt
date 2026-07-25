@@ -1,9 +1,8 @@
 package com.zerochat.di
 
 import android.content.Context
-import androidx.room.Room
-import com.zerochat.crypto.CryptoEngine
 import com.zerochat.crypto.AesCryptoEngine
+import com.zerochat.crypto.CryptoEngine
 import com.zerochat.data.local.*
 import com.zerochat.data.profile.ProfileImageProcessor
 import com.zerochat.data.profile.ProfileImageRepositoryImpl
@@ -26,197 +25,124 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
+import javax.inject.Qualifier
 import javax.inject.Singleton
+
+@Qualifier
+@Retention(AnnotationRetention.BINARY)
+annotation class DefaultDispatcher
 
 @Module
 @InstallIn(SingletonComponent::class)
 object AppModule {
 
-    // ═══════════════════════════════════════════════════════════════
-    // Database
-    // ═══════════════════════════════════════════════════════════════
+    // ── Crypto ─────────────────────────────────────────────────────
 
     @Provides
     @Singleton
-    fun provideDatabase(@ApplicationContext context: Context): ZeroChatDatabase {
-        return Room.databaseBuilder(
+    fun provideCryptoEngine(impl: AesCryptoEngine): CryptoEngine = impl
+
+    // ── Database ───────────────────────────────────────────────────
+
+    @Provides
+    @Singleton
+    fun provideDatabase(@ApplicationContext context: Context): ZeroChatDatabase =
+        androidx.room.Room.databaseBuilder(
             context,
             ZeroChatDatabase::class.java,
             ZeroChatDatabase.DATABASE_NAME
-        )
-            .fallbackToDestructiveMigration()
-            .build()
-    }
+        ).build()
 
-    @Provides
-    fun provideMessageDao(db: ZeroChatDatabase): MessageDao = db.messageDao()
+    @Provides fun provideMessageDao(db: ZeroChatDatabase): MessageDao = db.messageDao()
+    @Provides fun providePeerDao(db: ZeroChatDatabase): PeerDao = db.peerDao()
+    @Provides fun provideUserProfileDao(db: ZeroChatDatabase): UserProfileDao = db.userProfileDao()
 
-    @Provides
-    fun providePeerDao(db: ZeroChatDatabase): PeerDao = db.peerDao()
+    // ── Repositories ───────────────────────────────────────────────
 
-    @Provides
-    fun provideUserProfileDao(db: ZeroChatDatabase): UserProfileDao = db.userProfileDao()
+    @Provides @Singleton
+    fun provideMessageRepository(dao: MessageDao): MessageRepository =
+        MessageRepositoryImpl(dao)
 
-    // ═══════════════════════════════════════════════════════════════
-    // Repositories
-    // ═══════════════════════════════════════════════════════════════
+    @Provides @Singleton
+    fun providePeerRepository(dao: PeerDao): PeerRepository =
+        PeerRepositoryImpl(dao)
 
-    @Provides
-    @Singleton
-    fun provideMessageRepository(messageDao: MessageDao): MessageRepository {
-        return MessageRepositoryImpl(messageDao)
-    }
+    @Provides @Singleton
+    fun provideProfileImageRepository(dao: UserProfileDao, @ApplicationContext context: Context): ProfileImageRepository =
+        ProfileImageRepositoryImpl(dao, context)
 
-    @Provides
-    @Singleton
-    fun providePeerRepository(peerDao: PeerDao): PeerRepository {
-        return PeerRepositoryImpl(peerDao)
-    }
+    // ── Profile Image ──────────────────────────────────────────────
 
-    @Provides
-    @Singleton
-    fun provideProfileImageRepository(
-        userProfileDao: UserProfileDao,
-        peerDao: PeerDao,
-    ): ProfileImageRepository {
-        return ProfileImageRepositoryImpl(userProfileDao, peerDao)
-    }
+    @Provides @Singleton
+    fun provideProfileImageProcessor(@ApplicationContext context: Context): ProfileImageProcessor =
+        ProfileImageProcessor(context)
 
-    // ═══════════════════════════════════════════════════════════════
-    // Crypto
-    // ═══════════════════════════════════════════════════════════════
+    @Provides @Singleton
+    fun provideProfileImageStorage(@ApplicationContext context: Context): ProfileImageStorage =
+        ProfileImageStorage(context)
 
-    @Provides
-    @Singleton
-    fun provideCryptoEngine(@ApplicationContext context: Context): CryptoEngine {
-        return AesCryptoEngine(context)
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    // Profile Image
-    // ═══════════════════════════════════════════════════════════════
-
-    @Provides
-    @Singleton
-    fun provideProfileImageProcessor(
-        @ApplicationContext context: Context,
-    ): ProfileImageProcessor {
-        return ProfileImageProcessor(context)
-    }
-
-    @Provides
-    @Singleton
-    fun provideProfileImageStorage(
-        @ApplicationContext context: Context,
-    ): ProfileImageStorage {
-        return ProfileImageStorage(context)
-    }
-
-    @Provides
-    @Singleton
+    @Provides @Singleton
     fun provideProfileImageUseCase(
-        imageProcessor: ProfileImageProcessor,
-        imageStorage: ProfileImageStorage,
-        profileRepository: ProfileImageRepository,
-    ): ProfileImageUseCase {
-        return ProfileImageUseCase(
-            imageProcessor = imageProcessor,
-            imageStorage = imageStorage,
-            profileRepository = profileRepository,
-        )
-    }
+        processor: ProfileImageProcessor,
+        storage: ProfileImageStorage,
+        repository: ProfileImageRepository,
+    ): ProfileImageUseCase = ProfileImageUseCase(processor, storage, repository)
 
-    @Provides
-    @Singleton
-    fun provideProfileSyncHandler(
-        transportRouter: TransportRouter,
-        profileRepository: ProfileImageRepository,
-        imageStorage: ProfileImageStorage,
-        imageProcessor: ProfileImageProcessor,
-    ): ProfileSyncHandler {
-        return ProfileSyncHandler(
-            transportRouter = transportRouter,
-            profileRepository = profileRepository,
-            imageStorage = imageStorage,
-            imageProcessor = imageProcessor,
-        )
-    }
+    // ── Network / Transport ────────────────────────────────────────
 
-    // ═══════════════════════════════════════════════════════════════
-    // Domain — Session & Use Cases
-    // ═══════════════════════════════════════════════════════════════
+    @Provides @Singleton
+    fun provideWifiDirectReceiver(): WifiDirectReceiver = WifiDirectReceiver()
 
-    @Provides
-    @Singleton
-    fun provideSessionManager(cryptoEngine: CryptoEngine): SessionManager {
-        return SessionManager(cryptoEngine)
-    }
+    @Provides @Singleton
+    fun provideLanTransport(
+        @ApplicationContext context: Context,
+        wifiDirectReceiver: WifiDirectReceiver,
+    ): LanTransport = LanTransportImpl(context, wifiDirectReceiver)
 
-    @Provides
-    @Singleton
+    @Provides @Singleton
+    fun provideWanTransport(
+        @ApplicationContext context: Context,
+    ): WanTransport = WebRtcTransport(context)
+
+    @Provides @Singleton
+    fun provideTransportRouter(
+        lanTransport: LanTransport,
+        wanTransport: WanTransport,
+    ): TransportRouter = TransportRouterImpl(lanTransport, wanTransport)
+
+    // ── Domain ─────────────────────────────────────────────────────
+
+    @Provides @Singleton
+    fun provideSessionManager(
+        cryptoEngine: CryptoEngine,
+    ): SessionManager = SessionManager(cryptoEngine)
+
+    @Provides @Singleton
     fun provideSendMessageUseCase(
         cryptoEngine: CryptoEngine,
         messageRepository: MessageRepository,
         sessionManager: SessionManager,
         transportRouter: TransportRouter,
-    ): SendMessageUseCase {
-        return SendMessageUseCase(
-            cryptoEngine = cryptoEngine,
-            messageRepository = messageRepository,
-            sessionManager = sessionManager,
-            transportRouter = transportRouter,
-        )
-    }
+    ): SendMessageUseCase = SendMessageUseCase(
+        cryptoEngine, messageRepository, sessionManager, transportRouter
+    )
 
-    @Provides
-    @Singleton
+    @Provides @Singleton
     fun provideIncomingMessageHandler(
         cryptoEngine: CryptoEngine,
         messageRepository: MessageRepository,
         sessionManager: SessionManager,
         transportRouter: TransportRouter,
-    ): IncomingMessageHandler {
-        return IncomingMessageHandler(
-            cryptoEngine = cryptoEngine,
-            messageRepository = messageRepository,
-            sessionManager = sessionManager,
-            transportRouter = transportRouter,
-        )
-    }
+    ): IncomingMessageHandler = IncomingMessageHandler(
+        cryptoEngine, messageRepository, sessionManager, transportRouter
+    )
 
-    // ═══════════════════════════════════════════════════════════════
-    // Network — LAN
-    // ═══════════════════════════════════════════════════════════════
-
-    @Provides
-    @Singleton
-    fun provideLanTransport(
-        @ApplicationContext context: Context,
-        wifiDirectReceiver: WifiDirectReceiver,
-    ): LanTransport {
-        return LanTransportImpl(context, wifiDirectReceiver)
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    // Network — WAN
-    // ═══════════════════════════════════════════════════════════════
-
-    @Provides
-    @Singleton
-    fun provideWanTransport(@ApplicationContext context: Context): WanTransport {
-        return WebRtcTransport(context)
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    // Transport Router
-    // ═══════════════════════════════════════════════════════════════
-
-    @Provides
-    @Singleton
-    fun provideTransportRouter(
-        lanTransport: LanTransport,
-        wanTransport: WanTransport,
-    ): TransportRouter {
-        return TransportRouterImpl(lanTransport, wanTransport)
-    }
+    @Provides @Singleton
+    fun provideProfileSyncHandler(
+        imageProcessor: ProfileImageProcessor,
+        imageStorage: ProfileImageStorage,
+        transportRouter: TransportRouter,
+    ): ProfileSyncHandler = ProfileSyncHandler(
+        imageProcessor, imageStorage, transportRouter
+    )
 }

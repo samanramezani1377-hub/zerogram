@@ -3,6 +3,7 @@ package com.zerochat.ui
 import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
+import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -14,65 +15,86 @@ import com.zerochat.ui.discovery.DiscoveryScreen
 import com.zerochat.ui.settings.SettingsScreen
 
 /**
- * Main navigation graph for the app.
+ * Application navigation graph.
  *
  * Screens:
- *  - Contacts (home)
- *  - Discovery (find nearby peers)
- *  - Chat (conversation view)
- *  - Settings
+ *  - contacts (home)
+ *  - discovery (find nearby peers)
+ *  - chat/{peerFingerprint} (conversation)
+ *  - settings
+ *
+ * Uses Compose Navigation with standard slide transitions.
  */
-@Composable
-fun ZeroChatNavHost() {
-    val navController = rememberNavController()
+object NavRoutes {
+    const val CONTACTS = "contacts"
+    const val DISCOVERY = "discovery"
+    const val CHAT = "chat/{peerFingerprint}"
+    const val SETTINGS = "settings"
 
+    fun chatRoute(fingerprint: String) = "chat/$fingerprint"
+}
+
+@Composable
+fun ZeroChatNavHost(
+    navController: NavHostController = rememberNavController(),
+) {
     NavHost(
         navController = navController,
-        startDestination = "contacts",
+        startDestination = NavRoutes.CONTACTS,
         enterTransition = {
-            slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.Left, tween(300))
+            slideIntoContainer(
+                AnimatedContentTransitionScope.SlideDirection.Left,
+                tween(300),
+            )
         },
         exitTransition = {
-            slideOutOfContainer(AnimatedContentTransitionScope.SlideDirection.Left, tween(300))
+            slideOutOfContainer(
+                AnimatedContentTransitionScope.SlideDirection.Left,
+                tween(300),
+            )
+        },
+        popEnterTransition = {
+            slideIntoContainer(
+                AnimatedContentTransitionScope.SlideDirection.Right,
+                tween(300),
+            )
+        },
+        popExitTransition = {
+            slideOutOfContainer(
+                AnimatedContentTransitionScope.SlideDirection.Right,
+                tween(300),
+            )
         },
     ) {
-        composable("contacts") {
+        composable(NavRoutes.CONTACTS) {
             ContactsScreen(
-                onNavigateToChat = { fingerprint ->
-                    navController.navigate("chat/$fingerprint")
-                },
-                onNavigateToDiscovery = {
-                    navController.navigate("discovery")
-                },
-                onNavigateToSettings = {
-                    navController.navigate("settings")
-                },
+                onNavigateToChat = { fp -> navController.navigate(NavRoutes.chatRoute(fp)) },
+                onNavigateToDiscovery = { navController.navigate(NavRoutes.DISCOVERY) },
+                onNavigateToSettings = { navController.navigate(NavRoutes.SETTINGS) },
             )
         }
 
-        composable("discovery") {
+        composable(NavRoutes.DISCOVERY) {
             DiscoveryScreen(
                 onNavigateBack = { navController.popBackStack() },
-                onPeerSelected = { fingerprint ->
-                    navController.navigate("chat/$fingerprint")
-                },
+                onPeerSelected = { fp -> navController.navigate(NavRoutes.chatRoute(fp)) },
             )
         }
 
         composable(
-            route = "chat/{peerFingerprint}",
+            route = NavRoutes.CHAT,
             arguments = listOf(
                 navArgument("peerFingerprint") { type = NavType.StringType }
-            )
-        ) { backStackEntry ->
-            val fingerprint = backStackEntry.arguments?.getString("peerFingerprint") ?: return@composable
+            ),
+        ) { entry ->
+            val fingerprint = entry.arguments?.getString("peerFingerprint") ?: return@composable
             ChatScreen(
                 peerFingerprint = fingerprint,
                 onNavigateBack = { navController.popBackStack() },
             )
         }
 
-        composable("settings") {
+        composable(NavRoutes.SETTINGS) {
             SettingsScreen(
                 onNavigateBack = { navController.popBackStack() },
             )
