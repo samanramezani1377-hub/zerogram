@@ -3,8 +3,6 @@ package com.zerochat.ui.discovery
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.foundation.clickable
-import com.zerochat.network.signaling.WanConnectStatus
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -24,9 +22,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.zerochat.network.lan.LanPeer
-
-
-import androidx.compose.runtime.LaunchedEffect
+import com.zerochat.ui.theme.TelegramBlue
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -37,12 +33,7 @@ fun DiscoveryScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     var selectedTab by remember { mutableIntStateOf(0) }
-    var showAddPeerDialog by remember { mutableStateOf(false) }
-    var manualPeerId by remember { mutableStateOf("") }
 
-    // Navigate to chat when connection succeeds
-    // KEY: reset the fingerprint immediately after navigating to prevent
-    // re-navigation when the user presses back and this composable recomposes.
     LaunchedEffect(uiState.connectedPeerFingerprint) {
         uiState.connectedPeerFingerprint?.let { fp ->
             onPeerSelected(fp)
@@ -53,47 +44,39 @@ fun DiscoveryScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Find Peers") },
-                navigationIcon = {
-                    IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                actions = {
-                    IconButton(onClick = { viewModel.startDiscovery() }) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Refresh")
-                    }
-                    IconButton(onClick = { showAddPeerDialog = true }) {
-                        Icon(Icons.Default.Add, contentDescription = "Add manually")
-                    }
-                }
+                title = { Text("Discover", fontWeight = FontWeight.Bold) },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                ),
             )
-        }
+        },
+        containerColor = MaterialTheme.colorScheme.background,
     ) { paddingValues ->
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues),
+            modifier = Modifier.fillMaxSize().padding(paddingValues),
         ) {
-            TabRow(selectedTabIndex = selectedTab) {
+            TabRow(
+                selectedTabIndex = selectedTab,
+                containerColor = MaterialTheme.colorScheme.surface,
+                contentColor = TelegramBlue,
+            ) {
                 Tab(
                     selected = selectedTab == 0,
                     onClick = { selectedTab = 0 },
-                    text = { Text("Discover") },
-                    icon = { Icon(Icons.Default.Wifi, contentDescription = null) },
+                    text = { Text("Nearby") },
+                    icon = { Icon(Icons.Default.Wifi, null) },
                 )
                 Tab(
                     selected = selectedTab == 1,
                     onClick = { selectedTab = 1 },
                     text = { Text("PIN Code") },
-                    icon = { Icon(Icons.Default.Pin, contentDescription = null) },
+                    icon = { Icon(Icons.Default.Pin, null) },
                 )
             }
 
             AnimatedVisibility(
                 visible = uiState.error != null,
-                enter = fadeIn(),
-                exit = fadeOut(),
+                enter = fadeIn(), exit = fadeOut(),
             ) {
                 Surface(
                     color = MaterialTheme.colorScheme.errorContainer,
@@ -103,15 +86,10 @@ fun DiscoveryScreen(
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Icon(
-                            Icons.Default.ErrorOutline,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onErrorContainer,
-                            modifier = Modifier.size(16.dp),
-                        )
+                        Icon(Icons.Default.ErrorOutline, null, tint = MaterialTheme.colorScheme.onErrorContainer, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = uiState.error ?: "",
+                            uiState.error ?: "",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onErrorContainer,
                             modifier = Modifier.weight(1f),
@@ -120,37 +98,8 @@ fun DiscoveryScreen(
                 }
             }
 
-            if (showAddPeerDialog) {
-                AlertDialog(
-                    onDismissRequest = { showAddPeerDialog = false },
-                    title = { Text("Add Peer") },
-                    text = {
-                        OutlinedTextField(
-                            value = manualPeerId,
-                            onValueChange = { manualPeerId = it },
-                            label = { Text("Peer ID or IP Address") },
-                            placeholder = { Text("e.g. ZC:abc123 or 192.168.1.5") },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    },
-                    confirmButton = {
-                        TextButton(onClick = {
-                            viewModel.connectManually(manualPeerId)
-                            showAddPeerDialog = false
-                            manualPeerId = ""
-                        }) { Text("Connect") }
-                    },
-                    dismissButton = {
-                        TextButton(onClick = { showAddPeerDialog = false }) {
-                            Text("Cancel")
-                        }
-                    }
-                )
-            }
-
             when (selectedTab) {
-                0 -> ScanTab(uiState, viewModel, onPeerSelected)
+                0 -> NearbyTab(uiState, viewModel)
                 1 -> PinCodeTab(uiState, viewModel)
             }
         }
@@ -158,117 +107,43 @@ fun DiscoveryScreen(
 }
 
 @Composable
-private fun ScanTab(
-    uiState: DiscoveryUiState,
-    viewModel: DiscoveryViewModel,
-    onPeerSelected: (String) -> Unit,
-) {
+private fun NearbyTab(uiState: DiscoveryUiState, viewModel: DiscoveryViewModel) {
     when {
         uiState.isDiscovering && uiState.peers.isEmpty() -> {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center,
-            ) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    CircularProgressIndicator()
+                    CircularProgressIndicator(color = TelegramBlue)
                     Spacer(modifier = Modifier.height(16.dp))
-                    Text(
-                        "Searching for nearby peers...",
-                        style = MaterialTheme.typography.bodyLarge,
-                    )
+                    Text("Searching for nearby peers...", style = MaterialTheme.typography.bodyLarge)
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        "Make sure WiFi is enabled on both devices",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    Text("Make sure WiFi is enabled on both devices", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
-
         uiState.peers.isEmpty() && !uiState.isDiscovering -> {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center,
-            ) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(
-                        Icons.Default.PersonSearch,
-                        contentDescription = null,
-                        modifier = Modifier.size(64.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    Icon(Icons.Default.PersonSearch, null, Modifier.size(64.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
                     Spacer(modifier = Modifier.height(16.dp))
-                    Text(
-                        "No peers found",
-                        style = MaterialTheme.typography.headlineSmall,
-                    )
+                    Text("No peers found", style = MaterialTheme.typography.headlineSmall)
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        "Make sure WiFi is enabled on both devices",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedButton(onClick = { viewModel.startDiscovery() }) {
-                        Icon(Icons.Default.Refresh, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
+                    Text("Make sure WiFi is enabled on both devices", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(modifier = Modifier.height(16.dp))
+                    FilledTonalButton(
+                        onClick = { viewModel.startDiscovery() },
+                        colors = ButtonDefaults.filledTonalButtonColors(containerColor = TelegramBlue, contentColor = androidx.compose.ui.graphics.Color.White),
+                    ) {
+                        Icon(Icons.Default.Refresh, null)
+                        Spacer(Modifier.width(8.dp))
                         Text("Scan Now")
                     }
                 }
             }
         }
-
         else -> {
             LazyColumn(contentPadding = PaddingValues(vertical = 8.dp)) {
-                item {
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 4.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                        ),
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            if (uiState.isDiscovering) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(14.dp),
-                                    strokeWidth = 2.dp,
-                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
-                                )
-                            } else {
-                                Icon(
-                                    Icons.Default.Wifi,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = if (uiState.isDiscovering)
-                                    "Scanning..."
-                                else
-                                    "LAN Mode — ${uiState.peers.size} device(s) nearby",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer,
-                            )
-                        }
-                    }
-                }
-
                 items(uiState.peers, key = { it.deviceId + it.ipAddress }) { peer ->
-                    DiscoveredPeerItem(
-                        peer = peer,
-                         onClick = {
-                            
-                            
-                        },
-                        onConnect = { viewModel.connectToPeer(peer) },
-                    )
+                    PeerItem(peer = peer, onConnect = { viewModel.connectToPeer(peer) })
                 }
             }
         }
@@ -276,94 +151,61 @@ private fun ScanTab(
 }
 
 @Composable
-private fun PinCodeTab(
-    uiState: DiscoveryUiState,
-    viewModel: DiscoveryViewModel,
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
+private fun PeerItem(peer: LanPeer, onConnect: () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Default.PhoneAndroid, null, tint = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(peer.displayName.ifBlank { "Unknown Device" }, fontWeight = FontWeight.Medium)
+                if (peer.ipAddress.isNotEmpty()) {
+                    Text("${peer.ipAddress}:${peer.port}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Text("via ${peer.discoveryMethod}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            FilledTonalButton(onClick = onConnect) { Text("Connect") }
+        }
+    }
+}
+
+@Composable
+private fun PinCodeTab(uiState: DiscoveryUiState, viewModel: DiscoveryViewModel) {
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+        // My PIN card
         Card(
             modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.primaryContainer,
-            ),
+            colors = CardDefaults.cardColors(containerColor = TelegramBlue.copy(alpha = 0.1f)),
         ) {
-            Column(
-                modifier = Modifier.padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Text(
-                    "My Code",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    "Share this code with the other device",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
-                )
-                Spacer(modifier = Modifier.height(16.dp))
-
+            Column(modifier = Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("My Code", style = MaterialTheme.typography.titleMedium, color = TelegramBlue, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(4.dp))
+                Text("Share this with the other device", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(16.dp))
                 Text(
                     text = uiState.myPinCode,
-                    fontSize = 48.sp,
+                    fontSize = 42.sp,
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Bold,
-                    letterSpacing = 4.sp,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    textAlign = TextAlign.Center,
+                    letterSpacing = 6.sp,
+                    color = TelegramBlue,
                 )
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                if (uiState.isAdvertisingPin) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            Icons.Default.WifiTethering,
-                            contentDescription = null,
-                            modifier = Modifier.size(14.dp),
-                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            "Broadcasting...",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        )
-                    }
-                } else {
-                    TextButton(onClick = { viewModel.startPinAdvertising() }) {
-                        Icon(Icons.Default.Refresh, contentDescription = null)
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Start Broadcasting")
-                    }
-                }
             }
         }
 
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(Modifier.height(24.dp))
         HorizontalDivider()
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(Modifier.height(24.dp))
 
-        Text(
-            "Enter Other Device's Code",
-            style = MaterialTheme.typography.titleMedium,
-            modifier = Modifier.fillMaxWidth(),
-            textAlign = TextAlign.Center,
-        )
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            "Type the 8-digit code shown on the other device",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.fillMaxWidth(),
-            textAlign = TextAlign.Center,
-        )
-        Spacer(modifier = Modifier.height(16.dp))
+        Text("Enter Other Device Code", style = MaterialTheme.typography.titleMedium, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
+        Spacer(Modifier.height(8.dp))
+        Text("Type the 8-digit code shown on the other device", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
+        Spacer(Modifier.height(16.dp))
 
         OutlinedTextField(
             value = uiState.lookupPin,
@@ -374,112 +216,44 @@ private fun PinCodeTab(
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(12.dp),
-            trailingIcon = {
-                if (uiState.lookupPin.isNotEmpty()) {
-                    IconButton(onClick = { viewModel.updateLookupPin("") }) {
-                        Icon(Icons.Default.Close, contentDescription = "Clear")
-                    }
-                }
-            },
         )
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(Modifier.height(16.dp))
 
         Button(
-            onClick = {
-                val finalPin = uiState.lookupPin.padStart(8, '0')
-                viewModel.lookupPinCode(finalPin)
-            },
+            onClick = { viewModel.lookupPinCode(uiState.lookupPin.padStart(8, '0')) },
             enabled = uiState.lookupPin.length >= 8 && !uiState.isLookingUp,
             modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.buttonColors(containerColor = TelegramBlue),
         ) {
             if (uiState.isLookingUp) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(20.dp),
-                    strokeWidth = 2.dp,
-                    color = MaterialTheme.colorScheme.onPrimary,
-                )
-                Spacer(modifier = Modifier.width(8.dp))
+                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = androidx.compose.ui.graphics.Color.White)
+                Spacer(Modifier.width(8.dp))
                 Text("Searching...")
             } else {
-                Icon(Icons.Default.Search, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
+                Icon(Icons.Default.Search, null)
+                Spacer(Modifier.width(8.dp))
                 Text("Find Device")
             }
         }
 
+        // Resolved peer
         AnimatedVisibility(visible = uiState.resolvedPeer != null) {
             uiState.resolvedPeer?.let { peer ->
-                Spacer(modifier = Modifier.height(16.dp))
                 Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                    ),
+                    modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
                 ) {
-                    Row(
-                        modifier = Modifier.padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(
-                            Icons.Default.CheckCircle,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onTertiaryContainer,
-                        )
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                "Device Found!",
-                                style = MaterialTheme.typography.titleSmall,
-                                color = MaterialTheme.colorScheme.onTertiaryContainer,
-                            )
-                            Text(
-                                "${peer.displayName.ifBlank { "Unknown" }} @ ${peer.ipAddress}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.8f),
-                            )
+                    Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.CheckCircle, null, tint = MaterialTheme.colorScheme.onTertiaryContainer)
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("Device Found!", style = MaterialTheme.typography.titleSmall)
+                            Text("${peer.displayName.ifBlank { "Unknown" }} @ ${peer.ipAddress}", style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 }
             }
         }
     }
-}
-
-@Composable
-private fun DiscoveredPeerItem(
-    peer: LanPeer,
-    onClick: () -> Unit,
-    onConnect: () -> Unit,
-) {
-    ListItem(
-        modifier = Modifier.clickable(onClick = onClick),
-        headlineContent = {
-            Text(
-                text = peer.displayName.ifBlank { "Unknown Device" },
-                fontWeight = FontWeight.Medium,
-            )
-        },
-        supportingContent = {
-            Column {
-                if (peer.ipAddress.isNotEmpty()) {
-                    Text(text = "IP: ${peer.ipAddress}:${peer.port}")
-                }
-                Text(
-                    text = "via ${peer.discoveryMethod}",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-        },
-        leadingContent = {
-            Icon(
-                Icons.Default.Person,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-            )
-        },
-        trailingContent = {
-            Button(onClick = onConnect) { Text("Connect") }
-        },
-    )
 }
