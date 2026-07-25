@@ -149,7 +149,7 @@ class TransportRouterImpl @Inject constructor(
         )
 
         Timber.i("✓ Route: $actualFingerprint → $ipAddress:$port [LAN]")
-        actualFingerprint
+        return actualFingerprint
     }
 
     override suspend fun connectWan(peerFingerprint: String): WanConnectionOffer {
