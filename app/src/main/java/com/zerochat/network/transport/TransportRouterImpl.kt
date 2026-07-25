@@ -1,6 +1,8 @@
 package com.zerochat.network.transport
 
+import com.zerochat.data.model.Peer
 import com.zerochat.data.model.TransportMode
+import com.zerochat.domain.PeerRepository
 import com.zerochat.network.lan.LanIncoming
 import com.zerochat.network.lan.LanTransport
 import com.zerochat.network.lan.LanTransportImpl
@@ -17,6 +19,7 @@ import javax.inject.Singleton
 class TransportRouterImpl @Inject constructor(
     private val lanTransport: LanTransport,
     private val wanTransport: WanTransport,
+    private val peerRepository: PeerRepository,
 ) : TransportRouter {
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -196,7 +199,34 @@ class TransportRouterImpl @Inject constructor(
                 lanEndpoint = Pair(senderIp, LanTransportImpl.DEFAULT_PORT),
             )
             Timber.i("✓ Auto-route registered for incoming $fingerprint @ $senderIp")
+
+            // Auto-save peer so the receiver can see the sender in Contacts
+            // and reply without manual connection.
+            scope.launch {
+                try {
+                    val existing = peerRepository.getPeer(fingerprint)
+                    if (existing == null) {
+                        peerRepository.savePeer(
+                            Peer(
+                                fingerprint = fingerprint,
+                                displayName = fingerprint.take(8),
+                                ipAddress = senderIp,
+                                port = LanTransportImpl.DEFAULT_PORT,
+                                preferredTransport = TransportMode.LAN,
+                                lastSeen = System.currentTimeMillis(),
+                            )
+                        )
+                        Timber.i("✓ Auto-saved peer $fingerprint from incoming connection")
+                    } else {
+                        peerRepository.updateConnectionInfo(
+                            fingerprint, senderIp, TransportMode.LAN, System.currentTimeMillis()
+                        )
+                    }
+                } catch (e: Exception) {
+                    Timber.w(e, "Failed to auto-save peer $fingerprint")
+                }
+            }
         }
-}
+    }
 
 }

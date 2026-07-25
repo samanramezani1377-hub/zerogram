@@ -40,9 +40,12 @@ fun DiscoveryScreen(
     var manualPeerId by remember { mutableStateOf("") }
 
     // Navigate to chat when connection succeeds
+    // KEY: reset the fingerprint immediately after navigating to prevent
+    // re-navigation when the user presses back and this composable recomposes.
     LaunchedEffect(uiState.connectedPeerFingerprint) {
         uiState.connectedPeerFingerprint?.let { fp ->
             onPeerSelected(fp)
+            viewModel.clearConnectedFingerprint()
         }
     }
 

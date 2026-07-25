@@ -198,4 +198,8 @@ class DiscoveryViewModel @Inject constructor(
             }
         }
     }
+
+    fun clearConnectedFingerprint() {
+        _uiState.update { it.copy(connectedPeerFingerprint = null) }
+    }
 }
