@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.zerochat.crypto.CryptoEngine
 import com.zerochat.data.model.Peer
 import com.zerochat.domain.PeerRepository
+import com.zerochat.domain.profile.ProfileImageRepository
 import com.zerochat.network.lan.LanTransport
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
@@ -16,6 +17,7 @@ data class ContactsUiState(
     val contacts: List<Peer> = emptyList(),
     val myId: String = "Initializing...",
     val myIp: String = "",
+    val myProfileImagePath: String? = null,
     val isLoading: Boolean = true,
 )
 
@@ -24,6 +26,7 @@ class ContactsViewModel @Inject constructor(
     private val cryptoEngine: CryptoEngine,
     private val lanTransport: LanTransport,
     private val peerRepository: PeerRepository,
+    private val profileImageRepository: ProfileImageRepository,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ContactsUiState())
@@ -33,6 +36,7 @@ class ContactsViewModel @Inject constructor(
         initializeIdentity()
         loadLocalIp()
         observeContacts()
+        observeLocalProfile()
     }
 
     private fun initializeIdentity() {
@@ -40,8 +44,6 @@ class ContactsViewModel @Inject constructor(
             try {
                 cryptoEngine.generateIdentity()
                 val fingerprint = cryptoEngine.getLocalFingerprint()
-                val publicKey = cryptoEngine.getPublicIdentityKey()
-
                 _uiState.update {
                     it.copy(
                         myId = "ZC:$fingerprint",
@@ -68,13 +70,6 @@ class ContactsViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Observe contacts from the database via PeerRepository.
-     *
-     * Previously the contact list was never populated because
-     * ContactsViewModel didn't read from PeerRepository. Now it
-     * reactively observes all saved peers.
-     */
     private fun observeContacts() {
         viewModelScope.launch {
             try {
@@ -83,6 +78,17 @@ class ContactsViewModel @Inject constructor(
                 }
             } catch (e: Exception) {
                 Timber.e(e, "Failed to observe contacts")
+            }
+        }
+    }
+
+    private fun observeLocalProfile() {
+        viewModelScope.launch {
+            val fingerprint = cryptoEngine.getLocalFingerprint()
+            profileImageRepository.getLocalProfile(fingerprint).collect { profile ->
+                _uiState.update {
+                    it.copy(myProfileImagePath = profile?.profileImagePath)
+                }
             }
         }
     }

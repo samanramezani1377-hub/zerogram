@@ -15,6 +15,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.zerochat.data.model.Peer
 import com.zerochat.data.model.TransportMode
+import com.zerochat.ui.profile.ProfileImage
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -53,10 +54,12 @@ fun ContactsScreen(
                 .fillMaxSize()
                 .padding(paddingValues),
         ) {
-            // My Identity Card
+            // My Identity Card — with profile picture
             MyIdentityCard(
                 myId = uiState.myId,
                 myIp = uiState.myIp,
+                profileImagePath = uiState.myProfileImagePath,
+                onNavigateToSettings = onNavigateToSettings,
             )
 
             Spacer(modifier = Modifier.height(8.dp))
@@ -106,7 +109,12 @@ fun ContactsScreen(
 }
 
 @Composable
-private fun MyIdentityCard(myId: String, myIp: String) {
+private fun MyIdentityCard(
+    myId: String,
+    myIp: String,
+    profileImagePath: String?,
+    onNavigateToSettings: () -> Unit,
+) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -115,24 +123,37 @@ private fun MyIdentityCard(myId: String, myIp: String) {
             containerColor = MaterialTheme.colorScheme.primaryContainer,
         ),
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                text = "My Identity",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onPrimaryContainer,
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            ProfileImage(
+                imagePath = profileImagePath,
+                size = 48.dp,
+                onClick = { onNavigateToSettings() },
+                borderColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                borderWidth = 1.dp,
             )
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = myId,
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = FontWeight.Medium,
-            )
-            if (myIp.isNotEmpty()) {
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "IP: $myIp",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
+                    text = "My Identity",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
                 )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = myId,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Medium,
+                )
+                if (myIp.isNotEmpty()) {
+                    Text(
+                        text = "IP: $myIp",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
+                    )
+                }
             }
         }
     }
@@ -168,14 +189,11 @@ private fun ContactItem(peer: Peer, onClick: () -> Unit) {
             }
         },
         leadingContent = {
-            Badge(
-                containerColor = when (peer.preferredTransport) {
-                    TransportMode.LAN -> MaterialTheme.colorScheme.tertiary
-                    TransportMode.WAN -> MaterialTheme.colorScheme.primary
-                    TransportMode.UNKNOWN -> MaterialTheme.colorScheme.outline
-                },
-                modifier = Modifier.size(12.dp),
-            ) {}
+            // Show peer's profile picture if available
+            ProfileImage(
+                imagePath = peer.profileImagePath,
+                size = 40.dp,
+            )
         },
     )
 }

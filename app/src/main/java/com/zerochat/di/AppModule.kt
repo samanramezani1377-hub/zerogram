@@ -4,16 +4,16 @@ import android.content.Context
 import androidx.room.Room
 import com.zerochat.crypto.CryptoEngine
 import com.zerochat.crypto.AesCryptoEngine
-import com.zerochat.data.local.ZeroChatDatabase
-import com.zerochat.data.local.MessageDao
-import com.zerochat.data.local.PeerDao
+import com.zerochat.data.local.*
+import com.zerochat.data.profile.ProfileImageProcessor
+import com.zerochat.data.profile.ProfileImageRepositoryImpl
+import com.zerochat.data.profile.ProfileImageStorage
 import com.zerochat.data.repository.MessageRepositoryImpl
 import com.zerochat.data.repository.PeerRepositoryImpl
-import com.zerochat.domain.IncomingMessageHandler
-import com.zerochat.domain.MessageRepository
-import com.zerochat.domain.PeerRepository
-import com.zerochat.domain.SendMessageUseCase
-import com.zerochat.domain.SessionManager
+import com.zerochat.domain.*
+import com.zerochat.domain.profile.ProfileImageRepository
+import com.zerochat.domain.profile.ProfileImageUseCase
+import com.zerochat.domain.profile.ProfileSyncHandler
 import com.zerochat.network.lan.LanTransport
 import com.zerochat.network.lan.LanTransportImpl
 import com.zerochat.network.lan.WifiDirectReceiver
@@ -28,19 +28,6 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
 
-/**
- * ZeroChat Hilt dependency injection module.
- *
- * Provides all singleton dependencies following Clean Architecture:
- * - Data layer: Room database, DAOs, repository implementations
- * - Domain layer: Use cases, session manager
- * - Network layer: LAN transport, WAN transport, transport router
- * - Crypto: AES-256-GCM engine (swap for Signal Protocol in production)
- *
- * All dependencies are scoped @Singleton so they live for the app's
- * entire lifecycle. The TransportRouter and IncomingMessageHandler
- * are started in ZeroChatApp.onCreate().
- */
 @Module
 @InstallIn(SingletonComponent::class)
 object AppModule {
@@ -67,6 +54,9 @@ object AppModule {
     @Provides
     fun providePeerDao(db: ZeroChatDatabase): PeerDao = db.peerDao()
 
+    @Provides
+    fun provideUserProfileDao(db: ZeroChatDatabase): UserProfileDao = db.userProfileDao()
+
     // ═══════════════════════════════════════════════════════════════
     // Repositories
     // ═══════════════════════════════════════════════════════════════
@@ -83,6 +73,15 @@ object AppModule {
         return PeerRepositoryImpl(peerDao)
     }
 
+    @Provides
+    @Singleton
+    fun provideProfileImageRepository(
+        userProfileDao: UserProfileDao,
+        peerDao: PeerDao,
+    ): ProfileImageRepository {
+        return ProfileImageRepositoryImpl(userProfileDao, peerDao)
+    }
+
     // ═══════════════════════════════════════════════════════════════
     // Crypto
     // ═══════════════════════════════════════════════════════════════
@@ -91,6 +90,56 @@ object AppModule {
     @Singleton
     fun provideCryptoEngine(@ApplicationContext context: Context): CryptoEngine {
         return AesCryptoEngine(context)
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Profile Image
+    // ═══════════════════════════════════════════════════════════════
+
+    @Provides
+    @Singleton
+    fun provideProfileImageProcessor(
+        @ApplicationContext context: Context,
+    ): ProfileImageProcessor {
+        return ProfileImageProcessor(context)
+    }
+
+    @Provides
+    @Singleton
+    fun provideProfileImageStorage(
+        @ApplicationContext context: Context,
+    ): ProfileImageStorage {
+        return ProfileImageStorage(context)
+    }
+
+    @Provides
+    @Singleton
+    fun provideProfileImageUseCase(
+        imageProcessor: ProfileImageProcessor,
+        imageStorage: ProfileImageStorage,
+        profileRepository: ProfileImageRepository,
+    ): ProfileImageUseCase {
+        return ProfileImageUseCase(
+            imageProcessor = imageProcessor,
+            imageStorage = imageStorage,
+            profileRepository = profileRepository,
+        )
+    }
+
+    @Provides
+    @Singleton
+    fun provideProfileSyncHandler(
+        transportRouter: TransportRouter,
+        profileRepository: ProfileImageRepository,
+        imageStorage: ProfileImageStorage,
+        imageProcessor: ProfileImageProcessor,
+    ): ProfileSyncHandler {
+        return ProfileSyncHandler(
+            transportRouter = transportRouter,
+            profileRepository = profileRepository,
+            imageStorage = imageStorage,
+            imageProcessor = imageProcessor,
+        )
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -147,8 +196,6 @@ object AppModule {
     ): LanTransport {
         return LanTransportImpl(context, wifiDirectReceiver)
     }
-
-    // WifiDirectReceiver is @Singleton @Inject — Hilt auto-provides it.
 
     // ═══════════════════════════════════════════════════════════════
     // Network — WAN

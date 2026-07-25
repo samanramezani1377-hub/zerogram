@@ -9,6 +9,7 @@ import com.zerochat.data.model.MessageStatus
 import com.zerochat.data.model.TransportMode
 import com.zerochat.domain.IncomingMessageHandler
 import com.zerochat.domain.MessageRepository
+import com.zerochat.domain.PeerRepository
 import com.zerochat.domain.SendMessageUseCase
 import com.zerochat.domain.SessionManager
 import com.zerochat.network.transport.TransportRouter
@@ -26,6 +27,8 @@ data class ChatUiState(
     val isConnected: Boolean = false,
     val isLoading: Boolean = true,
     val error: String? = null,
+    // ── Peer Profile ────────────────────────────────────────────
+    val peerProfileImagePath: String? = null,
 )
 
 @HiltViewModel
@@ -36,6 +39,7 @@ class ChatViewModel @Inject constructor(
     private val sessionManager: SessionManager,
     private val transportRouter: TransportRouter,
     private val incomingMessageHandler: IncomingMessageHandler,
+    private val peerRepository: PeerRepository,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ChatUiState())
@@ -43,25 +47,27 @@ class ChatViewModel @Inject constructor(
 
     private var peerFingerprint: String = ""
     private var messageCollectionJob: Job? = null
+    private var peerFlowJob: Job? = null
 
     fun initialize(peerFingerprint: String) {
         if (this.peerFingerprint == peerFingerprint &&
             messageCollectionJob?.isActive == true
         ) {
-            return // Already initialized for this peer
+            return
         }
 
         this.peerFingerprint = peerFingerprint
 
         // Cancel previous collection
         messageCollectionJob?.cancel()
+        peerFlowJob?.cancel()
 
         // Ensure a session exists
         viewModelScope.launch {
             sessionManager.getOrCreateSession(peerFingerprint)
         }
 
-        // Reactive message collection from database
+        // Reactive message collection
         messageCollectionJob = viewModelScope.launch {
             try {
                 messageRepository.getMessages(peerFingerprint).collect { messages ->
@@ -78,6 +84,20 @@ class ChatViewModel @Inject constructor(
                 Timber.e(e, "Error collecting messages for $peerFingerprint")
                 _uiState.update {
                     it.copy(isLoading = false, error = "Failed to load messages")
+                }
+            }
+        }
+
+        // Observe peer's profile picture
+        peerFlowJob = viewModelScope.launch {
+            peerRepository.getPeerFlow(peerFingerprint).collect { peer ->
+                _uiState.update {
+                    it.copy(
+                        peerProfileImagePath = peer?.profileImagePath,
+                        // Update peer name from stored display name
+                        peerName = peer?.displayName?.ifBlank { null }
+                            ?: formatPeerName(peerFingerprint),
+                    )
                 }
             }
         }
@@ -108,7 +128,6 @@ class ChatViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
-                // 1. Create optimistic message
                 val localFingerprint = cryptoEngine.getLocalFingerprint()
                 val message = Message(
                     id = Message.createId(localFingerprint),
@@ -123,14 +142,10 @@ class ChatViewModel @Inject constructor(
                     transportMode = transportRouter.currentMode(peerFingerprint),
                 )
 
-                // 2. Show immediately in UI
                 messageRepository.saveMessage(message)
-                Timber.d("Optimistic message saved: ${message.id}")
 
-                // 3. Encrypt and send
                 val result = sendMessageUseCase.sendOptimistic(message, trimmed)
 
-                // 4. Update error state based on result
                 when (result.status) {
                     MessageStatus.FAILED -> {
                         _uiState.update {
@@ -140,9 +155,7 @@ class ChatViewModel @Inject constructor(
                     MessageStatus.SENT -> {
                         _uiState.update { it.copy(error = null) }
                     }
-                    else -> {
-                        // PENDING or SENDING — still in progress
-                    }
+                    else -> {}
                 }
             } catch (e: Exception) {
                 Timber.e(e, "Error sending message to $peerFingerprint")
@@ -154,14 +167,12 @@ class ChatViewModel @Inject constructor(
     fun retryMessage(messageId: String) {
         viewModelScope.launch {
             try {
-                // Find the failed message
                 val failedMessage = _uiState.value.messages.find { it.id == messageId }
                 if (failedMessage == null) {
-                    Timber.w("Cannot retry — message $messageId not found in UI state")
+                    Timber.w("Cannot retry — message $messageId not found")
                     return@launch
                 }
 
-                // Reset to PENDING so it moves up in the UI, then try to send
                 messageRepository.updateStatus(messageId, MessageStatus.PENDING)
 
                 val result = sendMessageUseCase.sendOptimistic(
@@ -207,10 +218,10 @@ class ChatViewModel @Inject constructor(
     override fun onCleared() {
         super.onCleared()
         messageCollectionJob?.cancel()
+        peerFlowJob?.cancel()
     }
 
     private fun formatPeerName(fingerprint: String): String {
-        // Show first 8 + last 4 chars of fingerprint
         return if (fingerprint.length >= 12) {
             "${fingerprint.take(8)}…${fingerprint.takeLast(4)}"
         } else {

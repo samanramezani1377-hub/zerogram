@@ -19,13 +19,13 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.zerochat.data.model.Message
 import com.zerochat.data.model.MessageStatus
 import com.zerochat.data.model.TransportMode
+import com.zerochat.ui.profile.ProfileImage
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -60,16 +60,24 @@ fun ChatScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Column {
-                        Text(uiState.peerName)
-                        Text(
-                            text = when (uiState.transportMode) {
-                                TransportMode.LAN -> "🖧 Local Network"
-                                TransportMode.WAN -> "🌐 Internet"
-                                TransportMode.UNKNOWN -> if (uiState.isConnected) "Connected" else "Connecting..."
-                            },
-                            style = MaterialTheme.typography.bodySmall,
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        // Peer profile picture in chat header
+                        ProfileImage(
+                            imagePath = uiState.peerProfileImagePath,
+                            size = 36.dp,
                         )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(uiState.peerName)
+                            Text(
+                                text = when (uiState.transportMode) {
+                                    TransportMode.LAN -> "Local Network"
+                                    TransportMode.WAN -> "Internet"
+                                    TransportMode.UNKNOWN -> if (uiState.isConnected) "Connected" else "Connecting..."
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
                     }
                 },
                 navigationIcon = {
@@ -199,11 +207,10 @@ fun ChatScreen(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
                 ) {
-                    Icon(
-                        Icons.Default.Lock,
-                        contentDescription = null,
-                        modifier = Modifier.size(48.dp),
-                        tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f),
+                    // Show peer's profile picture large in empty state
+                    ProfileImage(
+                        imagePath = uiState.peerProfileImagePath,
+                        size = 80.dp,
                     )
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
@@ -309,7 +316,6 @@ private fun MessageBubble(
                     }
                 }
 
-                // Retry hint
                 if (isFailed) {
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(

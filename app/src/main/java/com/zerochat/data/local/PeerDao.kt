@@ -1,10 +1,6 @@
 package com.zerochat.data.local
 
-import androidx.room.Dao
-import androidx.room.Insert
-import androidx.room.OnConflictStrategy
-import androidx.room.Query
-import androidx.room.Update
+import androidx.room.*
 import com.zerochat.data.model.Peer
 import com.zerochat.data.model.TransportMode
 import kotlinx.coroutines.flow.Flow
@@ -27,12 +23,6 @@ interface PeerDao {
     @Update
     suspend fun updatePeer(peer: Peer)
 
-    /**
-     * Update connection info for a peer.
-     *
-     * The transport parameter uses TransportMode directly (stored as String in Room)
-     * for type safety and to prevent stringly-typed bugs.
-     */
     @Query("""
         UPDATE peers
         SET last_seen = :timestamp,
@@ -45,6 +35,24 @@ interface PeerDao {
         ipAddress: String,
         transport: TransportMode,
         timestamp: Long,
+    )
+
+    // ── Profile Picture ──────────────────────────────────────────
+
+    @Query("""
+        UPDATE peers
+        SET profile_image_id = :imageId,
+            profile_image_path = :imagePath,
+            profile_image_hash = :imageHash,
+            profile_updated_at = :updatedAt
+        WHERE fingerprint = :fingerprint
+    """)
+    suspend fun updatePeerProfileImage(
+        fingerprint: String,
+        imageId: String?,
+        imagePath: String?,
+        imageHash: String?,
+        updatedAt: Long,
     )
 
     @Query("DELETE FROM peers WHERE fingerprint = :fingerprint")

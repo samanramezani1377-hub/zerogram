@@ -10,6 +10,10 @@ import androidx.room.PrimaryKey
  *
  * In ZeroChat there are no accounts — identity is a cryptographic key pair.
  * A Peer is any device we've exchanged identity keys with.
+ *
+ * Profile image fields store the peer's profile picture metadata so
+ * we can display it without re-requesting from the peer each time.
+ * The actual image is stored in local cache, referenced by profileImagePath.
  */
 @Entity(
     tableName = "peers",
@@ -53,6 +57,24 @@ data class Peer(
     /** Public identity key (Base64-encoded X25519) */
     @ColumnInfo(name = "identity_key")
     val identityKey: String = "",
+
+    // ── Profile Picture Metadata ────────────────────────────────
+
+    /** Profile image ID from the peer — null if no profile picture */
+    @ColumnInfo(name = "profile_image_id")
+    val profileImageId: String? = null,
+
+    /** Local cache path for peer's profile image */
+    @ColumnInfo(name = "profile_image_path")
+    val profileImagePath: String? = null,
+
+    /** SHA-256 hash of the peer's profile image (for integrity) */
+    @ColumnInfo(name = "profile_image_hash")
+    val profileImageHash: String? = null,
+
+    /** Timestamp when the profile image was last updated by the peer */
+    @ColumnInfo(name = "profile_updated_at")
+    val profileUpdatedAt: Long = 0L,
 ) {
     companion object {
         const val DEFAULT_PORT = 44231

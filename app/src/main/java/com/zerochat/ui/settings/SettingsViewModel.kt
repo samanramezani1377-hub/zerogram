@@ -1,37 +1,61 @@
 package com.zerochat.ui.settings
 
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.zerochat.crypto.CryptoEngine
+import com.zerochat.data.model.UserProfile
+import com.zerochat.domain.profile.ProfileImageRepository
+import com.zerochat.domain.profile.ProfileImageUseCase
+import com.zerochat.domain.profile.ProfileSyncHandler
 import com.zerochat.network.lan.LanTransport
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import timber.log.Timber
 import javax.inject.Inject
 
 data class SettingsUiState(
     val myFingerprint: String = "Loading...",
     val myPublicKey: String = "",
     val localIps: List<String> = emptyList(),
+    // ── Profile Picture ─────────────────────────────────────────
+    val profileImagePath: String? = null,
+    val profileImageHash: String? = null,
+    val hasProfilePicture: Boolean = false,
+    val isProcessingImage: Boolean = false,
+    val showBottomSheet: Boolean = false,
+    val showPreview: Boolean = false,
+    val showRemoveConfirm: Boolean = false,
+    val error: String? = null,
 )
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val cryptoEngine: CryptoEngine,
     private val lanTransport: LanTransport,
+    private val profileImageUseCase: ProfileImageUseCase,
+    private val profileImageRepository: ProfileImageRepository,
+    private val profileSyncHandler: ProfileSyncHandler,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(SettingsUiState())
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
 
+    private var localFingerprint = ""
+
     init {
+        initialize()
+    }
+
+    private fun initialize() {
         viewModelScope.launch {
             val fingerprint = cryptoEngine.getLocalFingerprint()
+            localFingerprint = fingerprint
+
             val publicKey = cryptoEngine.getPublicIdentityKey()
             val ips = lanTransport.getLocalAddresses()
+
             _uiState.update {
                 it.copy(
                     myFingerprint = "ZC:$fingerprint",
@@ -39,6 +63,109 @@ class SettingsViewModel @Inject constructor(
                     localIps = ips,
                 )
             }
+
+            // Observe local profile for picture changes
+            profileImageRepository.getLocalProfile(fingerprint).collect { profile ->
+                _uiState.update {
+                    it.copy(
+                        profileImagePath = profile?.profileImagePath,
+                        profileImageHash = profile?.profileImageHash,
+                        hasProfilePicture = profile?.profileImagePath != null,
+                    )
+                }
+            }
         }
+    }
+
+    // ── Bottom Sheet ──────────────────────────────────────────────
+
+    fun showBottomSheet() {
+        _uiState.update { it.copy(showBottomSheet = true) }
+    }
+
+    fun hideBottomSheet() {
+        _uiState.update { it.copy(showBottomSheet = false) }
+    }
+
+    // ── Change Profile Photo ──────────────────────────────────────
+
+    fun changeProfilePhoto(uri: Uri) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isProcessingImage = true, error = null) }
+
+            val result = profileImageUseCase(localFingerprint, uri)
+            result.fold(
+                onSuccess = { hash ->
+                    _uiState.update { it.copy(isProcessingImage = false) }
+                    // Broadcast to peers
+                    val profile =
+                        profileImageRepository.getLocalProfileOnce(localFingerprint)
+                    profile?.let { p ->
+                        val size = try {
+                            p.profileImagePath?.let { path ->
+                                profileImageUseCase.loadImage(path)?.size ?: 0
+                            } ?: 0
+                        } catch (_: Exception) {
+                            0
+                        }
+                        profileSyncHandler.broadcastProfileUpdate(
+                            imageId = p.profileImageId ?: "",
+                            imageHash = p.profileImageHash ?: "",
+                            imageSize = size,
+                        )
+                    }
+                },
+                onFailure = { e ->
+                    _uiState.update {
+                        it.copy(
+                            isProcessingImage = false,
+                            error = e.message ?: "Failed to set profile photo",
+                        )
+                    }
+                },
+            )
+        }
+    }
+
+    // ── Remove Profile Photo ──────────────────────────────────────
+
+    fun requestRemovePhoto() {
+        _uiState.update { it.copy(showRemoveConfirm = true) }
+    }
+
+    fun dismissRemoveDialog() {
+        _uiState.update { it.copy(showRemoveConfirm = false) }
+    }
+
+    fun confirmRemovePhoto() {
+        viewModelScope.launch {
+            _uiState.update { it.copy(showRemoveConfirm = false, error = null) }
+
+            val result = profileImageUseCase.removeImage(localFingerprint)
+            result.fold(
+                onSuccess = {
+                    profileSyncHandler.broadcastProfileRemoved()
+                },
+                onFailure = { e ->
+                    _uiState.update {
+                        it.copy(error = e.message ?: "Failed to remove profile photo")
+                    }
+                },
+            )
+        }
+    }
+
+    // ── Preview ───────────────────────────────────────────────────
+
+    fun showPreview() {
+        _uiState.update { it.copy(showPreview = true) }
+    }
+
+    fun hidePreview() {
+        _uiState.update { it.copy(showPreview = false) }
+    }
+
+    fun clearError() {
+        _uiState.update { it.copy(error = null) }
     }
 }

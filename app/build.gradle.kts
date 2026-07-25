@@ -115,4 +115,7 @@ dependencies {
 
     // Timber (Logging)
     implementation(libs.timber)
+
+    // ExifInterface — read/process image EXIF metadata
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
 }
