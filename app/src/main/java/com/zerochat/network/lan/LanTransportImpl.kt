@@ -16,7 +16,6 @@ import java.net.Socket
 import java.net.SocketTimeoutException
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -50,7 +49,7 @@ class LanTransportImpl @Inject constructor(
         private const val LENGTH_FIELD_SIZE = 4
         private const val MAX_PAYLOAD_SIZE = 1_048_576 // 1 MB
         private const val SOCKET_TIMEOUT_MS = 30_000   // 30 seconds
-        private const val HEARTBEAT_INTERVAL_MS = TimeUnit.SECONDS.toMillis(15).toInt()
+        private const val HEARTBEAT_INTERVAL_MS = 15_000 // 15 seconds
     }
 
     // ── Server ─────────────────────────────────────────────────────

@@ -8,6 +8,7 @@ import com.zerochat.data.model.TransportMode
 import com.zerochat.network.transport.IncomingTransportMessage
 import com.zerochat.network.transport.TransportRouter
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Mutex
 import timber.log.Timber
 import java.util.Collections
 import java.util.LinkedHashMap

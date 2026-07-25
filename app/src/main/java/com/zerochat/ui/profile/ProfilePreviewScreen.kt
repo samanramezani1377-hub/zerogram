@@ -1,8 +1,9 @@
 package com.zerochat.ui.profile
 
-import androidx.compose.animation.*
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
@@ -28,8 +29,9 @@ import java.io.File
  * - Dark immersive background
  * - Pinch-to-zoom
  * - Pan when zoomed
- * - Tap to dismiss (or close button)
- * - Smooth enter/exit transitions (fade + scale)
+ * - Tap anywhere on background to dismiss
+ * - Close button in top-right corner
+ * - Smooth enter/exit transitions
  */
 @Composable
 fun ProfilePreviewScreen(
@@ -45,28 +47,37 @@ fun ProfilePreviewScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black.copy(alpha = 0.95f))
-            .pointerInput(Unit) {
-                detectTransformGestures { _, pan, zoom, _ ->
-                    scale = (scale * zoom).coerceIn(0.5f, 5f)
-                    offset = if (scale > 1f) {
-                        Offset(
-                            x = offset.x + pan.x,
-                            y = offset.y + pan.y,
-                        )
-                    } else {
-                        Offset.Zero
+            .then(
+                // Tap gesture — only dismiss if not zoomed
+                Modifier.pointerInput(Unit) {
+                    detectTransformGestures { _, pan, zoom, _ ->
+                        scale = (scale * zoom).coerceIn(0.5f, 5f)
+                        offset = if (scale > 1f) {
+                            Offset(
+                                x = offset.x + pan.x,
+                                y = offset.y + pan.y,
+                            )
+                        } else {
+                            Offset.Zero
+                        }
                     }
                 }
-            }
-            .clickable(
-                indication = null,
-                interactionSource = remember { MutableInteractionSource() },
-            ) {
-                if (scale <= 1.1f) {
-                    onDismiss()
-                }
-            },
+            ),
     ) {
+        // Tappable background layer for dismiss
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clickable(
+                    indication = null,
+                    interactionSource = remember { MutableInteractionSource() },
+                ) {
+                    if (scale <= 1.1f) {
+                        onDismiss()
+                    }
+                },
+        )
+
         // Close button
         IconButton(
             onClick = onDismiss,
@@ -101,26 +112,19 @@ fun ProfilePreviewScreen(
                         },
                     contentScale = ContentScale.Fit,
                 )
+            } else {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Default.Close,
+                        contentDescription = "Image not found",
+                        tint = Color.White.copy(alpha = 0.5f),
+                        modifier = Modifier.size(64.dp),
+                    )
+                }
             }
         }
     }
-}
-
-@Composable
-private fun Modifier.clickable(
-    indication: androidx.compose.foundation.interaction.MutableInteractionSource?,
-    interactionSource: androidx.compose.foundation.interaction.MutableInteractionSource,
-    onClick: () -> Unit,
-): Modifier {
-    // Simple clickable wrapper — exists so the fullscreen preview can be
-    // dismissed with a tap anywhere outside the image.
-    return this.then(
-        Modifier
-    ).then(
-        androidx.compose.foundation.clickable(
-            interactionSource = interactionSource,
-            indication = indication,
-            onClick = onClick,
-        )
-    )
 }

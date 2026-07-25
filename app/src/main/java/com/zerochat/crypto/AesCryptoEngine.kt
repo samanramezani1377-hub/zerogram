@@ -20,7 +20,6 @@ import java.security.KeyPairGenerator
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.TimeUnit
 import javax.crypto.Cipher
 import javax.crypto.Mac
 import javax.crypto.SecretKey
@@ -57,7 +56,7 @@ class AesCryptoEngine @Inject constructor(
         const val AES_KEY_SIZE = 256
         const val GCM_IV_SIZE = 12       // 96-bit IV — GCM standard
         const val GCM_TAG_SIZE = 128     // 128-bit authentication tag
-        const val SESSION_KEY_TTL_MS = TimeUnit.MINUTES.toMillis(30)
+        const val SESSION_KEY_TTL_MS = 1_800_000L // 30 minutes
         const val MAX_CACHED_SESSIONS = 200
 
         // HKDF info strings
