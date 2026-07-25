@@ -127,8 +127,9 @@ object AppModule {
         messageRepository: MessageRepository,
         sessionManager: SessionManager,
         transportRouter: TransportRouter,
+        connectionRequestUseCase: ConnectionRequestUseCase,
     ): IncomingMessageHandler = IncomingMessageHandler(
-        cryptoEngine, messageRepository, sessionManager, transportRouter
+        cryptoEngine, messageRepository, sessionManager, transportRouter, connectionRequestUseCase
     )
 
     @Provides @Singleton
@@ -152,7 +153,18 @@ object AppModule {
         transportRouter: TransportRouter,
     ): WanSignalingManager = WanSignalingManager(signalingClient, transportRouter)
 
-    // ── Connection Requests ────────────────────────────────────────
+    @Provides @Singleton
+    fun provideDiscoveryViewModel(
+        lanTransport: LanTransport,
+        transportRouter: TransportRouter,
+        peerRepository: PeerRepository,
+        wanSignalingManager: WanSignalingManager,
+        connectionRequestUseCase: ConnectionRequestUseCase,
+    ): DiscoveryViewModel = DiscoveryViewModel(
+        lanTransport, transportRouter, peerRepository, wanSignalingManager, connectionRequestUseCase
+    )
+
+    // ── Connection Requests ────────────────────────────────────────────────
 
     @Provides @Singleton
     fun provideConnectionRequestRepository(
