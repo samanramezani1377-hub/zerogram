@@ -399,13 +399,4 @@ class LanTransportImpl @Inject constructor(
             _discoveredPeers.value.filter { it.discoveryMethod == "wifi_direct" }
         )
     }
-
-    private suspend fun sendToSocket(socket: Socket, data: ByteArray) {
-        withContext(Dispatchers.IO) {
-            val output = socket.getOutputStream()
-            output.write(data)
-            output.flush()
-            Timber.d("Sent ${data.size} bytes to ${socket.inetAddress.hostAddress}")
-        }
-    }
 }
