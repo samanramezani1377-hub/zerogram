@@ -54,7 +54,7 @@ fun ContactsScreen(
                 .fillMaxSize()
                 .padding(paddingValues),
         ) {
-            // My Identity Card — with profile picture
+            // ── My Identity Card — with profile picture ──────────
             MyIdentityCard(
                 myId = uiState.myId,
                 myIp = uiState.myIp,
@@ -165,13 +165,13 @@ private fun ContactItem(peer: Peer, onClick: () -> Unit) {
         modifier = Modifier.clickable(onClick = onClick),
         headlineContent = {
             Text(
-                text = peer.displayName.ifBlank { peer.fingerprint.take(12) },
+                text = peer.displayName.ifBlank { formatFingerprint(peer.fingerprint) },
                 fontWeight = FontWeight.Medium,
             )
         },
         supportingContent = {
             Column {
-                Text(text = peer.fingerprint.take(12))
+                Text(text = formatFingerprint(peer.fingerprint))
                 if (peer.ipAddress.isNotEmpty()) {
                     Text(
                         text = "${peer.ipAddress}:${peer.port}",
@@ -180,8 +180,8 @@ private fun ContactItem(peer: Peer, onClick: () -> Unit) {
                 }
                 Text(
                     text = when (peer.preferredTransport) {
-                        TransportMode.LAN -> "LAN"
-                        TransportMode.WAN -> "Internet"
+                        TransportMode.LAN -> "🖧 LAN"
+                        TransportMode.WAN -> "🌐 Internet"
                         TransportMode.UNKNOWN -> "Unknown"
                     },
                     style = MaterialTheme.typography.bodySmall,
@@ -189,11 +189,19 @@ private fun ContactItem(peer: Peer, onClick: () -> Unit) {
             }
         },
         leadingContent = {
-            // Show peer's profile picture if available
+            // Show peer's profile picture if stored
             ProfileImage(
                 imagePath = peer.profileImagePath,
-                size = 40.dp,
+                size = 44.dp,
             )
         },
     )
+}
+
+private fun formatFingerprint(fp: String): String {
+    return if (fp.length >= 12) {
+        "${fp.take(8)}…${fp.takeLast(4)}"
+    } else {
+        fp
+    }
 }

@@ -46,10 +46,14 @@ fun DiscoveryScreen(
                     }
                 },
                 actions = {
+                    // Refresh button — force rescan
+                    IconButton(onClick = { viewModel.startDiscovery() }) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+                    }
                     IconButton(onClick = { showAddPeerDialog = true }) {
                         Icon(Icons.Default.Add, contentDescription = "Add manually")
                     }
-                },
+                }
             )
         }
     ) { paddingValues ->
@@ -155,7 +159,8 @@ private fun ScanTab(
     onPeerSelected: (String) -> Unit,
 ) {
     when {
-        uiState.isDiscovering -> {
+        // Only show spinner on FIRST load — silent refresh doesn't set isDiscovering
+        uiState.isDiscovering && uiState.peers.isEmpty() -> {
             Box(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center,
@@ -177,7 +182,7 @@ private fun ScanTab(
             }
         }
 
-        uiState.peers.isEmpty() -> {
+        uiState.peers.isEmpty() && !uiState.isDiscovering -> {
             Box(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center,
@@ -195,10 +200,16 @@ private fun ScanTab(
                         style = MaterialTheme.typography.headlineSmall,
                     )
                     Spacer(modifier = Modifier.height(8.dp))
-                    Button(onClick = { viewModel.startDiscovery() }) {
+                    Text(
+                        "Scanning automatically every 5 seconds...",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    OutlinedButton(onClick = { viewModel.startDiscovery() }) {
                         Icon(Icons.Default.Refresh, contentDescription = null)
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Scan Again")
+                        Text("Scan Now")
                     }
                 }
             }
@@ -219,14 +230,25 @@ private fun ScanTab(
                             modifier = Modifier.padding(12.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Icon(
-                                Icons.Default.Wifi,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                            )
+                            if (uiState.isDiscovering) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(14.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                )
+                            } else {
+                                Icon(
+                                    Icons.Default.Wifi,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                )
+                            }
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                "LAN Mode — ${uiState.peers.size} device(s) nearby",
+                                text = if (uiState.isDiscovering)
+                                    "Scanning..."
+                                else
+                                    "LAN Mode — ${uiState.peers.size} device(s) nearby",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSecondaryContainer,
                             )
@@ -238,7 +260,6 @@ private fun ScanTab(
                     DiscoveredPeerItem(
                         peer = peer,
                         onClick = {
-                            // Use the resolved fingerprint (not MAC address)
                             val fp = viewModel.resolveFingerprint(peer)
                             onPeerSelected(fp)
                         },

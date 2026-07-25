@@ -9,7 +9,10 @@ import com.zerochat.network.lan.LanPeer
 import com.zerochat.network.lan.LanTransport
 import com.zerochat.network.transport.TransportRouter
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import timber.log.Timber
 import javax.inject.Inject
@@ -37,10 +40,13 @@ class DiscoveryViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(DiscoveryUiState())
     val uiState: StateFlow<DiscoveryUiState> = _uiState.asStateFlow()
 
+    private var silentRefreshJob: Job? = null
+
     init {
         startDiscovery()
         observeDiscoveredPeers()
         generatePinCode()
+        startSilentRefresh()
     }
 
     // ── WiFi / mDNS Discovery ────────────────────────────────────
@@ -49,12 +55,47 @@ class DiscoveryViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.update { it.copy(isDiscovering = true, error = null) }
             try {
+                // Restart WiFi Direct discovery (sends fresh probe)
+                lanTransport.stopWiFiDirectDiscovery()
                 lanTransport.startWiFiDirectDiscovery()
+                // Restart mDNS too
+                lanTransport.stopMdnsDiscovery()
                 lanTransport.startMdnsDiscovery()
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(error = e.message, isDiscovering = false)
                 }
+            }
+        }
+    }
+
+    /**
+     * Silent auto-refresh: re-discovers peers every 5 seconds
+     * WITHOUT showing the spinner or disrupting the user.
+     *
+     * The user only sees `isDiscovering = true` on the initial scan.
+     * After that, discovery is silent — peers appear/disappear smoothly.
+     */
+    private fun startSilentRefresh() {
+        silentRefreshJob?.cancel()
+        silentRefreshJob = viewModelScope.launch {
+            // Wait for initial discovery to settle
+            delay(3_000)
+
+            while (isActive) {
+                try {
+                    // Only re-trigger discovery if we're not already scanning
+                    if (!_uiState.value.isDiscovering) {
+                        lanTransport.stopWiFiDirectDiscovery()
+                        lanTransport.startWiFiDirectDiscovery()
+                        lanTransport.stopMdnsDiscovery()
+                        lanTransport.startMdnsDiscovery()
+                    }
+                } catch (_: Exception) {
+                    // Silent — don't bother the user
+                }
+
+                delay(5_000) // Every 5 seconds
             }
         }
     }
@@ -180,15 +221,18 @@ class DiscoveryViewModel @Inject constructor(
      *  3. "lan_peer" as last resort
      */
     fun resolveFingerprint(peer: LanPeer): String {
-        // If deviceId is a non-empty, non-MAC address, use it
         val deviceId = peer.deviceId.trim()
         if (deviceId.isNotEmpty() &&
             !deviceId.matches(Regex("[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}"))
         ) {
             return deviceId
         }
-        // Fallback to IP
         return peer.ipAddress.ifBlank { "lan_peer" }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        silentRefreshJob?.cancel()
     }
 
     // ── Private ──────────────────────────────────────────────────
