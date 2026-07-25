@@ -102,6 +102,8 @@ private fun RequestCard(
                     RequestStatus.PENDING -> "⏳ Pending"
                     RequestStatus.ACCEPTED -> "✅ Accepted"
                     RequestStatus.REJECTED -> "❌ Rejected"
+                    RequestStatus.BLOCKED -> "🚫 Blocked"
+                    RequestStatus.EXPIRED -> "⏰ Expired"
                 },
                 style = MaterialTheme.typography.bodyMedium,
             )
