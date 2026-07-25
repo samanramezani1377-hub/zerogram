@@ -8,8 +8,8 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 import timber.log.Timber
-import java.io.BufferedInputStream
-import java.io.BufferedOutputStream
+import java.io.InputStream
+import java.io.OutputStream
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.NetworkInterface
@@ -356,26 +356,13 @@ class LanTransportImpl @Inject constructor(
     private suspend fun handleIncomingConnection(socket: Socket) {
         withContext(Dispatchers.IO) {
             try {
-                val input = BufferedInputStream(socket.getInputStream())
+                val input = socket.getInputStream()
+                val buffer = ByteArray(65536)
+                var bytesRead: Int
                 while (isActive && !socket.isClosed) {
-                    val lengthBytes = ByteArray(4)
-                    var read = input.read(lengthBytes)
-                    if (read < 4) break
-
-                    val length = ((lengthBytes[0].toInt() and 0xFF) shl 24) or
-                            ((lengthBytes[1].toInt() and 0xFF) shl 16) or
-                            ((lengthBytes[2].toInt() and 0xFF) shl 8) or
-                            (lengthBytes[3].toInt() and 0xFF)
-
-                    if (length <= 0 || length > MAX_MESSAGE_SIZE) {
-                        Timber.w("Invalid message length: $length — closing connection")
-                        break
-                    }
-
-                    val data = ByteArray(length)
-                    read = input.read(data)
-                    if (read < length) break
-
+                    bytesRead = input.read(buffer)
+                    if (bytesRead == -1) break
+                    val data = buffer.copyOf(bytesRead)
                     _incomingData.send(data)
                     Timber.d("Received ${data.size} bytes via LAN")
                 }
@@ -389,12 +376,7 @@ class LanTransportImpl @Inject constructor(
 
     private suspend fun sendToSocket(socket: Socket, data: ByteArray) {
         withContext(Dispatchers.IO) {
-            val output = BufferedOutputStream(socket.getOutputStream())
-            val length = data.size
-            output.write((length shr 24) and 0xFF)
-            output.write((length shr 16) and 0xFF)
-            output.write((length shr 8) and 0xFF)
-            output.write(length and 0xFF)
+            val output = socket.getOutputStream()
             output.write(data)
             output.flush()
             Timber.d("Sent ${data.size} bytes to ${socket.inetAddress.hostAddress}")
@@ -416,5 +398,14 @@ class LanTransportImpl @Inject constructor(
         updateMergedPeers(
             _discoveredPeers.value.filter { it.discoveryMethod == "wifi_direct" }
         )
+    }
+
+    private suspend fun sendToSocket(socket: Socket, data: ByteArray) {
+        withContext(Dispatchers.IO) {
+            val output = socket.getOutputStream()
+            output.write(data)
+            output.flush()
+            Timber.d("Sent ${data.size} bytes to ${socket.inetAddress.hostAddress}")
+        }
     }
 }

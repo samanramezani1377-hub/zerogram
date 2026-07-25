@@ -280,13 +280,13 @@ private fun PinCodeTab(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Big PIN display
+                // Big PIN display — 8 digits, monospace, no spacing
                 Text(
-                    text = uiState.myPinCode.chunked(4).joinToString("  "),
+                    text = uiState.myPinCode,
                     fontSize = 48.sp,
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Bold,
-                    letterSpacing = 8.sp,
+                    letterSpacing = 4.sp,
                     color = MaterialTheme.colorScheme.onPrimaryContainer,
                     textAlign = TextAlign.Center,
                 )
