@@ -1,0 +1,13 @@
+app = "zerogram-signaling"
+primary_region = "ams"
+
+[http_service]
+  internal_port = 8080
+  force_https = false
+
+[[http_service.checks]]
+  interval = "15s"
+  timeout = "5s"
+  grace_period = "5s"
+  method = "get"
+  path = "/health"

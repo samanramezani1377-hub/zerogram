@@ -25,6 +25,9 @@ class SignalingClient @Inject constructor() {
 
     companion object {
         // Default server URL — change this to your deployed server
+                // Change this to your deployed signaling server URL
+        // For local dev: "ws://10.0.2.2:8080" (Android emulator)
+        // For production: "wss://zerogram-signaling.fly.dev"
         const val DEFAULT_SIGNALING_URL = "ws://10.0.2.2:8080"
         private const val PING_INTERVAL_MS = 30_000L
         private const val RECONNECT_DELAY_MS = 3_000L

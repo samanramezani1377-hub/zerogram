@@ -228,6 +228,20 @@ function send(client, msg) {
   }
 }
 
+// Health check endpoint (for fly.io / Railway)
+const http = require('http');
+http.createServer((req, res) => {
+  if (req.url === '/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'ok', clients: wss.clients.size }));
+  } else {
+    res.writeHead(404);
+    res.end();
+  }
+}).listen(PORT + 1, () => {
+  console.log(`[Health] HTTP on port ${PORT + 1}`);
+});
+
 // Graceful shutdown
 process.on('SIGTERM', () => {
   console.log('[Shutdown] Closing server...');
