@@ -1,10 +1,6 @@
 package com.zerochat.network.lan
 
 import android.content.Context
-import android.net.wifi.WifiManager
-import android.net.wifi.p2p.WifiP2pConfig
-import android.net.wifi.p2p.WifiP2pDevice
-import android.net.wifi.p2p.WifiP2pInfo
 import android.net.wifi.p2p.WifiP2pManager
 import com.zerochat.data.model.Peer
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -12,209 +8,173 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 import timber.log.Timber
-import java.io.IOException
-import java.io.InputStream
-import java.io.OutputStream
-import java.net.*
+import java.io.BufferedInputStream
+import java.io.BufferedOutputStream
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.NetworkInterface
+import java.net.ServerSocket
+import java.net.Socket
+import java.security.SecureRandom
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * Production LAN transport implementation using TCP sockets + WiFi Direct + mDNS discovery.
+ *
+ * Key features:
+ * - TCP ServerSocket on a fixed port for incoming connections
+ * - WiFi Direct for peer discovery on local network
+ * - mDNS (JmDNS) for PIN-code based peer discovery
+ * - Length-prefix framing for TCP data transfer
+ */
 @Singleton
 class LanTransportImpl @Inject constructor(
     @ApplicationContext private val context: Context,
     private val wifiDirectReceiver: WifiDirectReceiver,
 ) : LanTransport {
 
-    // ── WiFi Direct ──
-    private val wifiP2pManager: WifiP2pManager? by lazy {
-        context.getSystemService(Context.WIFI_P2P_SERVICE) as? WifiP2pManager
+    companion object {
+        const val DEFAULT_PORT = 44231
+        const val MAX_MESSAGE_SIZE = 1024 * 1024 // 1 MB
+        private const val MDNS_SERVICE_TYPE = "_zerochat._tcp.local."
     }
-    private var wifiP2pChannel: WifiP2pManager.Channel? = null
 
-    // ── TCP Server ──
+    // ── Server state ────────────────────────────────────────────────
+
     private var serverSocket: ServerSocket? = null
-    private var clientSocket: Socket? = null
-    private var outputStream: OutputStream? = null
-    private var inputStream: InputStream? = null
     private val serverJob = Job()
     private val serverScope = CoroutineScope(Dispatchers.IO + serverJob)
 
-    // ── State flows ──
-    private val _discoveredPeers = MutableStateFlow<List<LanPeer>>(emptyList())
-    override fun discoveredPeers(): StateFlow<List<LanPeer>> = _discoveredPeers.asStateFlow()
+    // ── Peer connections ────────────────────────────────────────────
 
-    private val _connectionState = MutableStateFlow(LanConnectionState.DISCONNECTED)
-    override fun connectionState(): StateFlow<LanConnectionState> = _connectionState.asStateFlow()
+    private val activeSockets = ConcurrentHashMap<String, Socket>()
+
+    // ── Data channels ───────────────────────────────────────────────
 
     private val _incomingData = Channel<ByteArray>(Channel.BUFFERED)
     override fun incomingData(): Flow<ByteArray> = _incomingData.receiveAsFlow()
 
-    // ── mDNS ──
+    private val _discoveredPeers = MutableStateFlow<List<LanPeer>>(emptyList())
+    override fun discoveredPeers(): Flow<List<LanPeer>> = _discoveredPeers.asStateFlow()
+
+    private val _connectionState = MutableStateFlow(LanConnectionState.DISCONNECTED)
+    override fun connectionState(): Flow<LanConnectionState> = _connectionState.asStateFlow()
+
+    // ── WiFi Direct ─────────────────────────────────────────────────
+
+    private var wifiP2pManager: WifiP2pManager? = null
+    private var wifiP2pChannel: WifiP2pManager.Channel? = null
+
+    // ── mDNS ────────────────────────────────────────────────────────
+
     private var jmdns: javax.jmdns.JmDNS? = null
     private val mDNSPeers = mutableListOf<LanPeer>()
-
-    // ── Discovery jobs ──
-    private var discoveryJob: Job? = null
     private var mdnsDiscoveryJob: Job? = null
+    private var mdnsAdvertiseJob: Job? = null
 
-    // ── Server Lifecycle ─────────────────────────────────────────
+    // ── PIN code ────────────────────────────────────────────────────
 
-    override fun startListening() = startListening(Peer.DEFAULT_PORT)
+    private var pinCode: String? = null
+    private val secureRandom = SecureRandom()
 
-    private suspend fun startListening(port: Int) {
-        withContext(Dispatchers.IO) {
-            try {
-                serverSocket = ServerSocket(port, 50, InetAddress.getByName("0.0.0.0"))
-                _connectionState.value = LanConnectionState.CONNECTED
-                Timber.i("TCP server listening on port $port")
+    // ── Lifecycle ───────────────────────────────────────────────────
 
-                serverScope.launch {
-                    while (isActive) {
-                        try {
-                            val socket = serverSocket?.accept() ?: continue
-                            clientSocket = socket
-                            outputStream = socket.getOutputStream()
-                            inputStream = socket.getInputStream()
-                            _connectionState.value = LanConnectionState.CONNECTED
-                            Timber.i("Client connected: ${socket.inetAddress.hostAddress}")
+    override fun startListening() {
+        if (serverSocket != null) {
+            Timber.w("LAN server already running")
+            return
+        }
 
-                            socket.use { s ->
-                                val buffer = ByteArray(65536)
-                                var bytesRead: Int
-                                while (s.getInputStream().read(buffer).also { bytesRead = it } != -1) {
-                                    val data = buffer.copyOf(bytesRead)
-                                    _incomingData.send(data)
-                                }
-                            }
-                        } catch (e: IOException) {
-                            if (isActive) Timber.w(e, "Accept/read error")
-                        } finally {
-                            _connectionState.value = LanConnectionState.CONNECTED
-                        }
+        try {
+            serverSocket = ServerSocket(DEFAULT_PORT)
+            _connectionState.value = LanConnectionState.CONNECTED
+            Timber.i("LAN server listening on port $DEFAULT_PORT")
+
+            serverScope.launch {
+                while (isActive) {
+                    try {
+                        val clientSocket = serverSocket!!.accept()
+                        Timber.d("New LAN connection from ${clientSocket.inetAddress.hostAddress}")
+                        launch { handleIncomingConnection(clientSocket) }
+                    } catch (e: Exception) {
+                        if (isActive) Timber.w(e, "Error accepting LAN connection")
                     }
                 }
-            } catch (e: IOException) {
-                Timber.e(e, "Failed to start TCP server")
-                _connectionState.value = LanConnectionState.DISCONNECTED
             }
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to start LAN server")
+            _connectionState.value = LanConnectionState.DISCONNECTED
         }
     }
 
     override fun stopListening() {
         serverJob.cancel()
-        runCatching {
-            clientSocket?.close()
-            serverSocket?.close()
-            outputStream?.close()
-            inputStream?.close()
-        }
+        activeSockets.values.forEach { runCatching { it.close() } }
+        activeSockets.clear()
+        runCatching { serverSocket?.close() }
+        serverSocket = null
         _connectionState.value = LanConnectionState.DISCONNECTED
         Timber.i("LAN server stopped")
     }
 
-    // ── WiFi Direct Discovery ──────────────────────────────────
+    // ── Discovery ───────────────────────────────────────────────────
 
     override fun startWiFiDirectDiscovery() {
-        val manager = wifiP2pManager ?: run {
-            Timber.e("WiFi P2P not available on this device")
-            return
-        }
-
-        wifiP2pChannel = manager.initialize(context, context.mainLooper, null)
-        wifiP2pChannel?.let { channel ->
-            wifiDirectReceiver.initialize(manager, channel)
-        }
-
-        context.registerReceiver(
-            wifiDirectReceiver,
-            WifiDirectReceiver.createIntentFilter(),
-            Context.RECEIVER_NOT_EXPORTED
-        )
+        wifiP2pManager = context.getSystemService(Context.WIFI_P2P_SERVICE) as? WifiP2pManager
+            ?: return
+        wifiP2pChannel = wifiP2pManager!!.initialize(context, context.mainLooper, null)
+        wifiDirectReceiver.initialize(wifiP2pManager!!, wifiP2pChannel!!)
 
         wifiDirectReceiver.onPeersChanged = {
-            wifiP2pChannel?.let { ch ->
-                manager.requestPeers(ch) { peerList ->
-                    val peers = peerList?.deviceList?.mapNotNull { mapWifiP2pDevice(it) } ?: emptyList()
-                    Timber.d("WiFi Direct peers: ${peers.size}")
-                    updateDiscoveredPeers(peers)
-                }
+            wifiP2pManager?.requestPeers(wifiP2pChannel) { peerList ->
+                val peers = peerList?.deviceList?.map { device ->
+                    LanPeer(
+                        deviceId = device.deviceAddress,
+                        ipAddress = "",
+                        port = DEFAULT_PORT,
+                        displayName = device.deviceName,
+                        discoveryMethod = "wifi_direct",
+                    )
+                } ?: emptyList()
+                updateMergedPeers(peers)
             }
         }
 
-        wifiDirectReceiver.onConnectionChanged = { connected ->
-            if (connected) {
-                wifiP2pChannel?.let { ch ->
-                    manager.requestConnectionInfo(ch) { info: WifiP2pInfo ->
-                        if (info.groupOwnerAddress != null) {
-                            Timber.i("Group owner: ${info.groupOwnerAddress.hostAddress}")
-                            if (!info.isGroupOwner) {
-                                discoveryJob?.cancel()
-                                serverScope.launch {
-                                    connectDirect(
-                                        info.groupOwnerAddress.hostAddress ?: return@launch,
-                                        Peer.DEFAULT_PORT
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        _connectionState.value = LanConnectionState.CONNECTED
-
-        manager.discoverPeers(wifiP2pChannel, object : WifiP2pManager.ActionListener {
-            override fun onSuccess() {
-                Timber.i("WiFi Direct discovery started")
-            }
-            override fun onFailure(reason: Int) {
-                Timber.e("WiFi Direct discovery failed: $reason")
-            }
-        })
+        discoverPeers()
+        Timber.i("WiFi Direct discovery started")
     }
 
     override fun stopWiFiDirectDiscovery() {
-        runCatching {
-            wifiP2pChannel?.let { wifiP2pManager?.stopPeerDiscovery(it, null) }
-            context.unregisterReceiver(wifiDirectReceiver)
-        }
+        wifiP2pManager?.stopPeerDiscovery(wifiP2pChannel, null)
     }
 
-    // ── mDNS Discovery ─────────────────────────────────────────
-
     override fun startMdnsDiscovery() {
+        mdnsDiscoveryJob?.cancel()
         mdnsDiscoveryJob = serverScope.launch {
             try {
-                val wifiManager = context.getSystemService(Context.WIFI_SERVICE) as WifiManager
-                val localAddress = getLocalIpAddress()
-                jmdns = javax.jmdns.JmDNS.create(InetAddress.getByName(localAddress))
-                Timber.i("mDNS started on $localAddress")
+                val localIp = getLocalAddresses().firstOrNull() ?: return@launch
+                jmdns = javax.jmdns.JmDNS.create(InetAddress.getByName(localIp))
+                Timber.i("mDNS started on $localIp")
 
-                val serviceInfo = javax.jmdns.ServiceInfo.create(
-                    "_zerochat._tcp.local.",
-                    "ZeroChat-${android.os.Build.MODEL}",
-                    Peer.DEFAULT_PORT,
-                    "ZeroChat P2P Messenger"
-                )
-                jmdns?.registerService(serviceInfo)
-
-                jmdns?.addServiceListener("_zerochat._tcp.local.", object : javax.jmdns.ServiceListener {
+                // Browse for other ZeroChat services
+                jmdns?.addServiceListener(MDNS_SERVICE_TYPE, object : javax.jmdns.ServiceListener {
                     override fun serviceAdded(event: javax.jmdns.ServiceEvent) {
                         Timber.d("mDNS service added: ${event.name}")
-                        jmdns?.requestServiceInfo("_zerochat._tcp.local.", event.name)
+                        jmdns?.requestServiceInfo(MDNS_SERVICE_TYPE, event.name)
                     }
                     override fun serviceRemoved(event: javax.jmdns.ServiceEvent) {
                         Timber.d("mDNS service removed: ${event.name}")
                         mDNSPeers.removeAll { it.deviceId == event.name }
-                        refreshPeerList()
+                        refreshMergedPeers()
                     }
                     override fun serviceResolved(event: javax.jmdns.ServiceEvent) {
                         val addresses = event.info.inetAddresses
                         if (addresses.isNotEmpty()) {
                             val addr = addresses.first()
                             val peer = LanPeer(
-                                displayName = event.name,
+                                displayName = event.name.replace("ZC-", ""),
                                 ipAddress = addr.hostAddress ?: return,
                                 port = event.info.port,
                                 discoveryMethod = "mdns",
@@ -222,27 +182,23 @@ class LanTransportImpl @Inject constructor(
                             )
                             mDNSPeers.removeAll { it.deviceId == event.name }
                             mDNSPeers.add(peer)
-                            refreshPeerList()
+                            refreshMergedPeers()
                             Timber.i("mDNS peer resolved: ${peer.displayName} @ ${peer.ipAddress}")
                         }
                     }
                 })
             } catch (e: Exception) {
-                Timber.e(e, "Failed to start mDNS discovery")
+                Timber.e(e, "mDNS discovery error")
             }
         }
     }
 
     override fun stopMdnsDiscovery() {
         mdnsDiscoveryJob?.cancel()
-        runCatching {
-            jmdns?.unregisterAllServices()
-            jmdns?.close()
-            jmdns = null
-        }
+        runCatching { jmdns?.unregisterAllServices(); jmdns?.close(); jmdns = null }
     }
 
-    // ── Direct Connection ──────────────────────────────────────
+    // ── Connection ──────────────────────────────────────────────────
 
     override suspend fun connectDirect(ipAddress: String, port: Int): Boolean {
         return withContext(Dispatchers.IO) {
@@ -250,142 +206,215 @@ class LanTransportImpl @Inject constructor(
                 _connectionState.value = LanConnectionState.CONNECTING
                 val socket = Socket()
                 socket.connect(InetSocketAddress(ipAddress, port), 5000)
-                clientSocket = socket
-                outputStream = socket.getOutputStream()
-                inputStream = socket.getInputStream()
+                val key = "$ipAddress:$port"
+                activeSockets[key] = socket
                 _connectionState.value = LanConnectionState.CONNECTED
                 Timber.i("Connected to $ipAddress:$port")
-
-                serverScope.launch {
-                    socket.use { s ->
-                        val buffer = ByteArray(65536)
-                        var bytesRead: Int
-                        try {
-                            while (s.getInputStream().read(buffer).also { bytesRead = it } != -1) {
-                                val data = buffer.copyOf(bytesRead)
-                                _incomingData.send(data)
-                            }
-                        } catch (e: IOException) {
-                            Timber.w(e, "Read error from $ipAddress")
-                        } finally {
-                            _connectionState.value = LanConnectionState.CONNECTED
-                        }
-                    }
-                }
                 true
             } catch (e: Exception) {
-                Timber.e(e, "Failed to connect to $ipAddress:$port")
+                Timber.w(e, "Failed to connect to $ipAddress:$port")
                 _connectionState.value = LanConnectionState.DISCONNECTED
                 false
             }
         }
     }
 
-    // ── Data transfer ───────────────────────────────────────────
+    // ── Data transfer ───────────────────────────────────────────────
 
     override suspend fun sendData(data: ByteArray) {
-        withContext(Dispatchers.IO) {
-            try {
-                outputStream?.write(data)
-                outputStream?.flush()
-                Timber.d("Sent ${data.size} bytes via LAN")
-            } catch (e: Exception) {
-                Timber.e(e, "Failed to send data")
-                throw e
-            }
+        val socket = activeSockets.values.lastOrNull()
+        if (socket != null && socket.isConnected) {
+            sendToSocket(socket, data)
+        } else {
+            throw IllegalStateException("No active LAN connection. Call connectDirect() first.")
         }
     }
 
     override suspend fun sendDataTo(data: ByteArray, ipAddress: String, port: Int) {
         withContext(Dispatchers.IO) {
+            val key = "$ipAddress:$port"
+            val existingSocket = activeSockets[key]
+            if (existingSocket != null && existingSocket.isConnected) {
+                sendToSocket(existingSocket, data)
+            } else {
+                Socket().use { socket ->
+                    socket.connect(InetSocketAddress(ipAddress, port), 5000)
+                    sendToSocket(socket, data)
+                }
+                Timber.d("Sent ${data.size} bytes to $ipAddress:$port (short-lived)")
+            }
+        }
+    }
+
+    override suspend fun getLocalAddresses(): List<String> {
+        return withContext(Dispatchers.IO) {
             try {
-                if (clientSocket?.inetAddress?.hostAddress == ipAddress && clientSocket?.isConnected == true) {
-                    outputStream?.write(data)
-                    outputStream?.flush()
-                } else {
-                    Socket().use { socket ->
-                        socket.connect(InetSocketAddress(ipAddress, port), 5000)
-                        socket.getOutputStream().write(data)
-                        socket.getOutputStream().flush()
+                NetworkInterface.getNetworkInterfaces()?.toList()?.flatMap { iface ->
+                    iface.inetAddresses.toList()
+                        .filter { !it.isLoopbackAddress && it is java.net.Inet4Address }
+                        .map { it.hostAddress ?: "" }
+                        .filter { it.isNotBlank() }
+                } ?: emptyList()
+            } catch (e: Exception) {
+                Timber.w(e, "Failed to get local addresses")
+                emptyList()
+            }
+        }
+    }
+
+    // ── PIN Code (8-digit) ──────────────────────────────────────────
+
+    override fun getOrCreatePinCode(): String {
+        pinCode?.let { return it }
+
+        val code = String.format("%08d", secureRandom.nextInt(100_000_000))
+        pinCode = code
+        Timber.i("PIN code generated: $code")
+
+        // Start advertising it via mDNS
+        serverScope.launch { advertisePinCode() }
+        return code
+    }
+
+    override suspend fun advertisePinCode() {
+        val pin = pinCode ?: getOrCreatePinCode()
+
+        mdnsAdvertiseJob?.cancel()
+        mdnsAdvertiseJob = serverScope.launch {
+            try {
+                val localIp = getLocalAddresses().firstOrNull() ?: return@launch
+                if (jmdns == null) {
+                    jmdns = javax.jmdns.JmDNS.create(InetAddress.getByName(localIp))
+                }
+
+                // Service name includes the PIN so others can find it:
+                // "ZC-{pin}-{model}" → e.g. "ZC-12345678-Pixel7"
+                val serviceName = "ZC-$pin-${android.os.Build.MODEL.replace(" ", "-").take(20)}"
+                val serviceInfo = javax.jmdns.ServiceInfo.create(
+                    MDNS_SERVICE_TYPE,
+                    serviceName,
+                    DEFAULT_PORT,
+                    "ZeroChat PIN:$pin"
+                )
+                jmdns?.registerService(serviceInfo)
+                Timber.i("PIN $pin advertised via mDNS as '$serviceName'")
+            } catch (e: Exception) {
+                Timber.e(e, "Failed to advertise PIN via mDNS")
+                throw e
+            }
+        }
+        mdnsAdvertiseJob?.join()
+    }
+
+    override suspend fun resolvePinCode(pin: String): LanPeer? {
+        return withContext(Dispatchers.IO) {
+            try {
+                val localIp = getLocalAddresses().firstOrNull() ?: return@withContext null
+                if (jmdns == null) {
+                    jmdns = javax.jmdns.JmDNS.create(InetAddress.getByName(localIp))
+                }
+
+                // Look for a service whose name starts with "ZC-{pin}-"
+                val prefix = "ZC-$pin-"
+                val services = jmdns?.list(MDNS_SERVICE_TYPE) ?: emptyArray()
+
+                Timber.d("PIN lookup '$pin': found ${services.size} mDNS services")
+
+                for (svc in services) {
+                    val name = svc.name
+                    Timber.d("  → $name")
+                    if (name.startsWith(prefix)) {
+                        // Request resolution
+                        val info = jmdns?.getServiceInfo(MDNS_SERVICE_TYPE, name, 3000)
+                        val addresses = info?.inetAddresses
+                        if (addresses != null && addresses.isNotEmpty()) {
+                            val addr = addresses.first()
+                            val peer = LanPeer(
+                                displayName = name.replace("ZC-$pin-", "").replace("-", " "),
+                                ipAddress = addr.hostAddress ?: continue,
+                                port = info.port,
+                                discoveryMethod = "pin",
+                                deviceId = name,
+                            )
+                            Timber.i("PIN $pin resolved to ${peer.ipAddress}:${peer.port}")
+                            return@withContext peer
+                        }
                     }
                 }
-                Timber.d("Sent ${data.size} bytes to $ipAddress:$port")
+
+                Timber.w("No device found with PIN $pin")
+                null
             } catch (e: Exception) {
-                Timber.e(e, "Failed to send data to $ipAddress:$port")
+                Timber.e(e, "PIN resolution failed")
                 throw e
             }
         }
     }
 
-    // ── Utility ─────────────────────────────────────────────────
+    // ── Private helpers ─────────────────────────────────────────────
 
-    override suspend fun getLocalAddresses(): List<String> {
-        return withContext(Dispatchers.IO) {
-            val addresses = mutableListOf<String>()
+    private suspend fun handleIncomingConnection(socket: Socket) {
+        withContext(Dispatchers.IO) {
             try {
-                NetworkInterface.getNetworkInterfaces()?.toList()?.forEach { networkInterface ->
-                    if (networkInterface.isUp && !networkInterface.isLoopback) {
-                        networkInterface.inetAddresses.toList()
-                            .filterIsInstance<Inet4Address>()
-                            .filter { !it.isLoopbackAddress }
-                            .forEach { addresses.add(it.hostAddress ?: "") }
+                val input = BufferedInputStream(socket.getInputStream())
+                while (isActive && !socket.isClosed) {
+                    val lengthBytes = ByteArray(4)
+                    var read = input.read(lengthBytes)
+                    if (read < 4) break
+
+                    val length = ((lengthBytes[0].toInt() and 0xFF) shl 24) or
+                            ((lengthBytes[1].toInt() and 0xFF) shl 16) or
+                            ((lengthBytes[2].toInt() and 0xFF) shl 8) or
+                            (lengthBytes[3].toInt() and 0xFF)
+
+                    if (length <= 0 || length > MAX_MESSAGE_SIZE) {
+                        Timber.w("Invalid message length: $length — closing connection")
+                        break
                     }
+
+                    val data = ByteArray(length)
+                    read = input.read(data)
+                    if (read < length) break
+
+                    _incomingData.send(data)
+                    Timber.d("Received ${data.size} bytes via LAN")
                 }
             } catch (e: Exception) {
-                Timber.e(e, "Failed to get local addresses")
+                if (isActive) Timber.w(e, "Error reading from LAN connection")
+            } finally {
+                runCatching { socket.close() }
             }
-            addresses
         }
     }
 
-    // ── Private helpers ────────────────────────────────────────
-
-    private fun mapWifiP2pDevice(device: WifiP2pDevice): LanPeer? {
-        return LanPeer(
-            displayName = device.deviceName,
-            ipAddress = "", // Will be filled after connection
-            deviceId = device.deviceAddress,
-            discoveryMethod = "wifi_direct",
-        )
+    private suspend fun sendToSocket(socket: Socket, data: ByteArray) {
+        withContext(Dispatchers.IO) {
+            val output = BufferedOutputStream(socket.getOutputStream())
+            val length = data.size
+            output.write((length shr 24) and 0xFF)
+            output.write((length shr 16) and 0xFF)
+            output.write((length shr 8) and 0xFF)
+            output.write(length and 0xFF)
+            output.write(data)
+            output.flush()
+            Timber.d("Sent ${data.size} bytes to ${socket.inetAddress.hostAddress}")
+        }
     }
 
-    private fun getLocalIpAddress(): String {
-        return runCatching {
-            getLocalAddresses().firstOrNull()
-                ?: InetAddress.getLocalHost()?.hostAddress
-                ?: "127.0.0.1"
-        }.getOrDefault("127.0.0.1")
+    private fun discoverPeers() {
+        wifiP2pManager?.discoverPeers(wifiP2pChannel, object : WifiP2pManager.ActionListener {
+            override fun onSuccess() { Timber.d("WiFi Direct peer discovery initiated") }
+            override fun onFailure(reason: Int) { Timber.w("WiFi Direct peer discovery failed: reason=$reason") }
+        })
     }
 
-    private fun updateDiscoveredPeers(newPeers: List<LanPeer>) {
-        _discoveredPeers.value = (newPeers + mDNSPeers).distinctBy { it.deviceId + it.ipAddress }
+    private fun updateMergedPeers(wifiDirectPeers: List<LanPeer>) {
+        _discoveredPeers.value = (wifiDirectPeers + mDNSPeers).distinctBy { it.deviceId + it.ipAddress }
     }
 
-    private fun refreshPeerList() {
-        updateDiscoveredPeers(
+    private fun refreshMergedPeers() {
+        updateMergedPeers(
             _discoveredPeers.value.filter { it.discoveryMethod == "wifi_direct" }
         )
-    }
-
-    // ── WiFi Direct connection helper ──────────────────────────
-
-    suspend fun connectViaWifiDirect(device: WifiP2pDevice): Boolean {
-        return withContext(Dispatchers.Main) {
-            val config = WifiP2pConfig().apply {
-                deviceAddress = device.deviceAddress
-                groupOwnerIntent = 0
-            }
-            wifiP2pChannel?.let { channel ->
-                wifiP2pManager?.connect(channel, config, object : WifiP2pManager.ActionListener {
-                    override fun onSuccess() {
-                        Timber.i("WiFi Direct connection initiated to ${device.deviceName}")
-                    }
-                    override fun onFailure(reason: Int) {
-                        Timber.e("WiFi Direct connection failed: $reason")
-                    }
-                })
-            }
-            true
-        }
     }
 }
