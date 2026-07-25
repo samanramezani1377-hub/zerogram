@@ -9,6 +9,7 @@ import com.zerochat.data.profile.ProfileImageRepositoryImpl
 import com.zerochat.data.profile.ProfileImageStorage
 import com.zerochat.data.repository.MessageRepositoryImpl
 import com.zerochat.data.repository.PeerRepositoryImpl
+import com.zerochat.domain.PeerRepository
 import com.zerochat.domain.*
 import com.zerochat.domain.profile.ProfileImageRepository
 import com.zerochat.domain.profile.ProfileImageUseCase
