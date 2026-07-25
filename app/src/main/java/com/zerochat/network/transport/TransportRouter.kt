@@ -20,6 +20,9 @@ interface TransportRouter {
     /** Start listening on all available transports */
     suspend fun start()
 
+    /** Set the local device fingerprint for protocol headers */
+    fun setLocalFingerprint(fingerprint: String)
+
     /** Stop all transports and release resources */
     suspend fun stop()
 

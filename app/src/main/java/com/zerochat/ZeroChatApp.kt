@@ -1,6 +1,7 @@
 package com.zerochat
 
 import android.app.Application
+import com.zerochat.crypto.CryptoEngine
 import com.zerochat.domain.IncomingMessageHandler
 import com.zerochat.network.transport.TransportRouter
 import dagger.hilt.android.HiltAndroidApp
@@ -28,6 +29,7 @@ class ZeroChatApp : Application() {
 
     @Inject lateinit var transportRouter: TransportRouter
     @Inject lateinit var incomingMessageHandler: IncomingMessageHandler
+    @Inject lateinit var cryptoEngine: CryptoEngine
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -42,8 +44,10 @@ class ZeroChatApp : Application() {
 
         appScope.launch {
             try {
+                val fp = cryptoEngine.getLocalFingerprint()
+                transportRouter.setLocalFingerprint(fp)
                 transportRouter.start()
-                Timber.i("TransportRouter started")
+                Timber.i("TransportRouter started with fingerprint $fp")
             } catch (e: Exception) {
                 Timber.e(e, "Failed to start TransportRouter")
             }

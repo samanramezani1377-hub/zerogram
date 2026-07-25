@@ -8,6 +8,9 @@ import kotlinx.coroutines.flow.Flow
  * LAN transport enables direct device-to-device communication without
  * internet access. It uses WiFi Direct for peer discovery and a simple
  * TCP socket connection for data transfer.
+ *
+ * Protocol: each message is prefixed with 64-byte sender fingerprint
+ * so the receiver always knows which peer sent the data.
  */
 interface LanTransport {
 
@@ -15,6 +18,9 @@ interface LanTransport {
 
     fun startListening()
     fun stopListening()
+
+    /** Set the local device fingerprint for use in protocol header */
+    fun setLocalFingerprint(fingerprint: String)
 
     // ── Discovery ──────────────────────────────────────────────────
 
@@ -40,45 +46,37 @@ interface LanTransport {
     // ── Data transfer ──────────────────────────────────────────────
 
     /**
-     * Send raw data to the currently connected peer.
-     * This sends to the peer that was most recently connected via connectDirect().
-     */
-    suspend fun sendData(data: ByteArray)
-
-    /**
      * Send data to a specific peer identified by IP and port.
-     * Preferred over sendData() when multiple LAN peers may be active.
+     * Automatically prefixes data with local fingerprint header.
      */
     suspend fun sendDataTo(data: ByteArray, ipAddress: String, port: Int)
 
-    /** Flow of incoming data from any connected LAN peer */
-    fun incomingData(): Flow<ByteArray>
+    /**
+     * Flow of incoming data from any connected LAN peer.
+     * Includes peer fingerprint, payload, and sender IP.
+     */
+    fun incomingData(): Flow<LanIncoming>
 
     // ── Utility ────────────────────────────────────────────────────
 
     /** Get local IP addresses of this device */
     suspend fun getLocalAddresses(): List<String>
 
-    // ── PIN Code (8-digit) ──────────────────────────────────────────
+    // ── PIN Code (8-digit) ────────────────────────────────────────
 
-    /**
-     * Get or generate this device's 8-digit PIN code.
-     * Persistent across app restarts.
-     */
     fun getOrCreatePinCode(): String
-
-    /**
-     * Start advertising this device's PIN via mDNS.
-     * Other devices can find this device by entering the same PIN.
-     */
     suspend fun advertisePinCode()
-
-    /**
-     * Look up a PIN code on the local network via mDNS.
-     * @return a LanPeer with resolved IP if found, null otherwise.
-     */
     suspend fun resolvePinCode(pin: String): LanPeer?
 }
+
+/**
+ * Incoming data from a LAN peer, with resolved fingerprint.
+ */
+data class LanIncoming(
+    val peerFingerprint: String,
+    val payload: ByteArray,
+    val senderIp: String,
+)
 
 data class LanPeer(
     val deviceId: String = "",

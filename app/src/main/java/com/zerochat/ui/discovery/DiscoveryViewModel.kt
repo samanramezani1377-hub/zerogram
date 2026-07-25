@@ -3,6 +3,8 @@ package com.zerochat.ui.discovery
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.zerochat.data.model.Peer
+import com.zerochat.data.model.TransportMode
+import com.zerochat.domain.PeerRepository
 import com.zerochat.network.lan.LanPeer
 import com.zerochat.network.lan.LanTransport
 import com.zerochat.network.transport.TransportRouter
@@ -34,6 +36,7 @@ data class DiscoveryUiState(
 class DiscoveryViewModel @Inject constructor(
     private val lanTransport: LanTransport,
     private val transportRouter: TransportRouter,
+    private val peerRepository: PeerRepository,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(DiscoveryUiState())
@@ -64,6 +67,10 @@ class DiscoveryViewModel @Inject constructor(
             try {
                 val fingerprint = peer.deviceId.ifBlank { peer.ipAddress }
                 transportRouter.connectLan(peer.ipAddress, peer.port, fingerprint)
+
+                // Save peer to contacts so it appears in the contacts list
+                savePeer(fingerprint, peer)
+
                 Timber.i("Connected to peer $fingerprint via LAN")
             } catch (e: Exception) {
                 _uiState.update { it.copy(error = "Connection failed: ${e.message}") }
@@ -162,6 +169,38 @@ class DiscoveryViewModel @Inject constructor(
     }
 
     // ── Private ──────────────────────────────────────────────────
+
+    /**
+     * Save a discovered peer to the contacts database so it appears
+     * in the ContactsScreen list without needing to re-discover.
+     */
+    private suspend fun savePeer(fingerprint: String, peer: LanPeer) {
+        try {
+            val existing = peerRepository.getPeer(fingerprint)
+            if (existing == null) {
+                val newPeer = Peer(
+                    fingerprint = fingerprint,
+                    displayName = peer.displayName.ifBlank { peer.ipAddress },
+                    ipAddress = peer.ipAddress,
+                    port = peer.port,
+                    preferredTransport = TransportMode.LAN,
+                    lastSeen = System.currentTimeMillis(),
+                )
+                peerRepository.savePeer(newPeer)
+                Timber.i("Peer saved to contacts: $fingerprint")
+            } else {
+                // Update connection info for existing peer
+                peerRepository.updateConnectionInfo(
+                    fingerprint = fingerprint,
+                    ipAddress = peer.ipAddress,
+                    transport = "LAN",
+                    timestamp = System.currentTimeMillis(),
+                )
+            }
+        } catch (e: Exception) {
+            Timber.w(e, "Failed to save peer $fingerprint")
+        }
+    }
 
     private fun observeDiscoveredPeers() {
         viewModelScope.launch {

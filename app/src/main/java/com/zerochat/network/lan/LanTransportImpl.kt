@@ -2,7 +2,6 @@ package com.zerochat.network.lan
 
 import android.content.Context
 import android.net.wifi.p2p.WifiP2pManager
-import com.zerochat.data.model.Peer
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
@@ -21,13 +20,13 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Production LAN transport implementation using TCP sockets + WiFi Direct + mDNS discovery.
+ * LAN transport using TCP sockets + WiFi Direct + mDNS (with PIN codes).
  *
- * Key features:
- * - TCP ServerSocket on a fixed port for incoming connections
- * - WiFi Direct for peer discovery on local network
- * - mDNS (JmDNS) for PIN-code based peer discovery
- * - Length-prefix framing for TCP data transfer
+ * Protocol: raw TCP with a simple header:
+ *   [64 bytes: sender fingerprint hex] [payload...]
+ *
+ * This lets the receiver identify which peer sent the data without
+ * needing pre-configured routes.
  */
 @Singleton
 class LanTransportImpl @Inject constructor(
@@ -37,13 +36,14 @@ class LanTransportImpl @Inject constructor(
 
     companion object {
         const val DEFAULT_PORT = 44231
-        const val MAX_MESSAGE_SIZE = 1024 * 1024 // 1 MB
         private const val MDNS_SERVICE_TYPE = "_zerochat._tcp.local."
+        const val FINGERPRINT_LEN = 64  // SHA-256 hex
     }
 
     // ── Server state ────────────────────────────────────────────────
 
     private var serverSocket: ServerSocket? = null
+    private var localFingerprint: String = "unknown"
     private val serverJob = Job()
     private val serverScope = CoroutineScope(Dispatchers.IO + serverJob)
 
@@ -53,8 +53,8 @@ class LanTransportImpl @Inject constructor(
 
     // ── Data channels ───────────────────────────────────────────────
 
-    private val _incomingData = Channel<ByteArray>(Channel.BUFFERED)
-    override fun incomingData(): Flow<ByteArray> = _incomingData.receiveAsFlow()
+    private val _incomingData = Channel<LanIncoming>(Channel.BUFFERED)
+    override fun incomingData(): Flow<LanIncoming> = _incomingData.receiveAsFlow()
 
     private val _discoveredPeers = MutableStateFlow<List<LanPeer>>(emptyList())
     override fun discoveredPeers(): Flow<List<LanPeer>> = _discoveredPeers.asStateFlow()
@@ -86,12 +86,10 @@ class LanTransportImpl @Inject constructor(
             Timber.w("LAN server already running")
             return
         }
-
         try {
             serverSocket = ServerSocket(DEFAULT_PORT)
             _connectionState.value = LanConnectionState.CONNECTED
             Timber.i("LAN server listening on port $DEFAULT_PORT")
-
             serverScope.launch {
                 while (isActive) {
                     try {
@@ -119,6 +117,10 @@ class LanTransportImpl @Inject constructor(
         Timber.i("LAN server stopped")
     }
 
+    override fun setLocalFingerprint(fingerprint: String) {
+        localFingerprint = fingerprint
+    }
+
     // ── Discovery ───────────────────────────────────────────────────
 
     override fun startWiFiDirectDiscovery() {
@@ -142,6 +144,21 @@ class LanTransportImpl @Inject constructor(
             }
         }
 
+        wifiDirectReceiver.onConnectionChanged = { connected ->
+            if (connected) {
+                wifiP2pManager?.requestConnectionInfo(wifiP2pChannel) { info ->
+                    if (info.groupOwnerAddress != null && !info.isGroupOwner) {
+                        serverScope.launch {
+                            connectDirect(
+                                info.groupOwnerAddress.hostAddress ?: return@launch,
+                                DEFAULT_PORT
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
         discoverPeers()
         Timber.i("WiFi Direct discovery started")
     }
@@ -157,15 +174,11 @@ class LanTransportImpl @Inject constructor(
                 val localIp = getLocalAddresses().firstOrNull() ?: return@launch
                 jmdns = javax.jmdns.JmDNS.create(InetAddress.getByName(localIp))
                 Timber.i("mDNS started on $localIp")
-
-                // Browse for other ZeroChat services
                 jmdns?.addServiceListener(MDNS_SERVICE_TYPE, object : javax.jmdns.ServiceListener {
                     override fun serviceAdded(event: javax.jmdns.ServiceEvent) {
-                        Timber.d("mDNS service added: ${event.name}")
                         jmdns?.requestServiceInfo(MDNS_SERVICE_TYPE, event.name)
                     }
                     override fun serviceRemoved(event: javax.jmdns.ServiceEvent) {
-                        Timber.d("mDNS service removed: ${event.name}")
                         mDNSPeers.removeAll { it.deviceId == event.name }
                         refreshMergedPeers()
                     }
@@ -183,7 +196,7 @@ class LanTransportImpl @Inject constructor(
                             mDNSPeers.removeAll { it.deviceId == event.name }
                             mDNSPeers.add(peer)
                             refreshMergedPeers()
-                            Timber.i("mDNS peer resolved: ${peer.displayName} @ ${peer.ipAddress}")
+                            Timber.i("mDNS peer: ${peer.displayName} @ ${peer.ipAddress}")
                         }
                     }
                 })
@@ -203,7 +216,6 @@ class LanTransportImpl @Inject constructor(
     override suspend fun connectDirect(ipAddress: String, port: Int): Boolean {
         return withContext(Dispatchers.IO) {
             try {
-                _connectionState.value = LanConnectionState.CONNECTING
                 val socket = Socket()
                 socket.connect(InetSocketAddress(ipAddress, port), 5000)
                 val key = "$ipAddress:$port"
@@ -213,7 +225,6 @@ class LanTransportImpl @Inject constructor(
                 true
             } catch (e: Exception) {
                 Timber.w(e, "Failed to connect to $ipAddress:$port")
-                _connectionState.value = LanConnectionState.DISCONNECTED
                 false
             }
         }
@@ -221,27 +232,24 @@ class LanTransportImpl @Inject constructor(
 
     // ── Data transfer ───────────────────────────────────────────────
 
-    override suspend fun sendData(data: ByteArray) {
-        val socket = activeSockets.values.lastOrNull()
-        if (socket != null && socket.isConnected) {
-            sendToSocket(socket, data)
-        } else {
-            throw IllegalStateException("No active LAN connection. Call connectDirect() first.")
-        }
-    }
-
+    /**
+     * Send data prefixed with local fingerprint so receiver can identify us.
+     */
     override suspend fun sendDataTo(data: ByteArray, ipAddress: String, port: Int) {
         withContext(Dispatchers.IO) {
             val key = "$ipAddress:$port"
             val existingSocket = activeSockets[key]
+
+            val framed = buildFramedPayload(data)
+
             if (existingSocket != null && existingSocket.isConnected) {
-                sendToSocket(existingSocket, data)
+                sendToSocket(existingSocket, framed)
             } else {
                 Socket().use { socket ->
                     socket.connect(InetSocketAddress(ipAddress, port), 5000)
-                    sendToSocket(socket, data)
+                    sendToSocket(socket, framed)
                 }
-                Timber.d("Sent ${data.size} bytes to $ipAddress:$port (short-lived)")
+                Timber.d("Sent ${data.size}B to $ipAddress:$port (short-lived)")
             }
         }
     }
@@ -266,19 +274,15 @@ class LanTransportImpl @Inject constructor(
 
     override fun getOrCreatePinCode(): String {
         pinCode?.let { return it }
-
         val code = String.format("%08d", secureRandom.nextInt(100_000_000))
         pinCode = code
         Timber.i("PIN code generated: $code")
-
-        // Start advertising it via mDNS
         serverScope.launch { advertisePinCode() }
         return code
     }
 
     override suspend fun advertisePinCode() {
         val pin = pinCode ?: getOrCreatePinCode()
-
         mdnsAdvertiseJob?.cancel()
         mdnsAdvertiseJob = serverScope.launch {
             try {
@@ -286,15 +290,9 @@ class LanTransportImpl @Inject constructor(
                 if (jmdns == null) {
                     jmdns = javax.jmdns.JmDNS.create(InetAddress.getByName(localIp))
                 }
-
-                // Service name includes the PIN so others can find it:
-                // "ZC-{pin}-{model}" → e.g. "ZC-12345678-Pixel7"
                 val serviceName = "ZC-$pin-${android.os.Build.MODEL.replace(" ", "-").take(20)}"
                 val serviceInfo = javax.jmdns.ServiceInfo.create(
-                    MDNS_SERVICE_TYPE,
-                    serviceName,
-                    DEFAULT_PORT,
-                    "ZeroChat PIN:$pin"
+                    MDNS_SERVICE_TYPE, serviceName, DEFAULT_PORT, "ZeroChat PIN:$pin"
                 )
                 jmdns?.registerService(serviceInfo)
                 Timber.i("PIN $pin advertised via mDNS as '$serviceName'")
@@ -313,35 +311,27 @@ class LanTransportImpl @Inject constructor(
                 if (jmdns == null) {
                     jmdns = javax.jmdns.JmDNS.create(InetAddress.getByName(localIp))
                 }
-
-                // Look for a service whose name starts with "ZC-{pin}-"
                 val prefix = "ZC-$pin-"
                 val services = jmdns?.list(MDNS_SERVICE_TYPE) ?: emptyArray()
-
                 Timber.d("PIN lookup '$pin': found ${services.size} mDNS services")
-
                 for (svc in services) {
-                    val name = svc.name
-                    Timber.d("  → $name")
-                    if (name.startsWith(prefix)) {
-                        // Request resolution
-                        val info = jmdns?.getServiceInfo(MDNS_SERVICE_TYPE, name, 3000)
+                    if (svc.name.startsWith(prefix)) {
+                        val info = jmdns?.getServiceInfo(MDNS_SERVICE_TYPE, svc.name, 3000)
                         val addresses = info?.inetAddresses
                         if (addresses != null && addresses.isNotEmpty()) {
                             val addr = addresses.first()
                             val peer = LanPeer(
-                                displayName = name.replace("ZC-$pin-", "").replace("-", " "),
+                                displayName = svc.name.replace("ZC-$pin-", "").replace("-", " "),
                                 ipAddress = addr.hostAddress ?: continue,
                                 port = info.port,
                                 discoveryMethod = "pin",
-                                deviceId = name,
+                                deviceId = svc.name,
                             )
-                            Timber.i("PIN $pin resolved to ${peer.ipAddress}:${peer.port}")
+                            Timber.i("PIN $pin → ${peer.ipAddress}:${peer.port}")
                             return@withContext peer
                         }
                     }
                 }
-
                 Timber.w("No device found with PIN $pin")
                 null
             } catch (e: Exception) {
@@ -353,19 +343,53 @@ class LanTransportImpl @Inject constructor(
 
     // ── Private helpers ─────────────────────────────────────────────
 
+    /**
+     * Prefix data with sender fingerprint: [64-byte fingerprint] [payload]
+     */
+    private fun buildFramedPayload(payload: ByteArray): ByteArray {
+        val fp = localFingerprint.take(FINGERPRINT_LEN)
+            .padEnd(FINGERPRINT_LEN, '0')
+            .toByteArray(Charsets.UTF_8)
+        return fp + payload
+    }
+
+    /**
+     * Handle incoming TCP connection: read fingerprint header, then payload.
+     * Emit LanIncoming with resolved fingerprint so TransportRouter knows the sender.
+     */
     private suspend fun handleIncomingConnection(socket: Socket) {
         withContext(Dispatchers.IO) {
             try {
                 val input = socket.getInputStream()
+                val senderIp = socket.inetAddress.hostAddress
+
+                // Read fingerprint header (64 bytes)
+                val fpBuf = ByteArray(FINGERPRINT_LEN)
+                var totalRead = 0
+                while (totalRead < FINGERPRINT_LEN) {
+                    val n = input.read(fpBuf, totalRead, FINGERPRINT_LEN - totalRead)
+                    if (n == -1) break
+                    totalRead += n
+                }
+                if (totalRead < FINGERPRINT_LEN) {
+                    Timber.w("Connection closed before fingerprint from $senderIp")
+                    return@withContext
+                }
+
+                val fingerprint = String(fpBuf, Charsets.UTF_8).trimEnd('0')
+                Timber.i("Incoming connection from fingerprint=$fingerprint @ $senderIp")
+
+                // Now read payload — one read() per message (raw TCP)
                 val buffer = ByteArray(65536)
-                var bytesRead: Int
                 while (isActive && !socket.isClosed) {
-                    bytesRead = input.read(buffer)
+                    val bytesRead = input.read(buffer)
                     if (bytesRead == -1) break
                     val data = buffer.copyOf(bytesRead)
-                    _incomingData.send(data)
-                    Timber.d("Received ${data.size} bytes via LAN")
+                    _incomingData.send(LanIncoming(fingerprint, data, senderIp))
+                    Timber.d("Received ${data.size}B from $fingerprint @ $senderIp")
                 }
+            } catch (e: java.net.SocketException) {
+                Timber.d("Connection closed: ${e.message}")
             } catch (e: Exception) {
                 if (isActive) Timber.w(e, "Error reading from LAN connection")
             } finally {
@@ -379,7 +403,7 @@ class LanTransportImpl @Inject constructor(
             val output = socket.getOutputStream()
             output.write(data)
             output.flush()
-            Timber.d("Sent ${data.size} bytes to ${socket.inetAddress.hostAddress}")
+            Timber.d("Sent ${data.size}B to ${socket.inetAddress.hostAddress}")
         }
     }
 
