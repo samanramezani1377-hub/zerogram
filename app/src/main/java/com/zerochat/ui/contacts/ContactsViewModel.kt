@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.zerochat.crypto.CryptoEngine
 import com.zerochat.data.model.Peer
+import com.zerochat.domain.MessageRepository
 import com.zerochat.domain.PeerRepository
 import com.zerochat.domain.profile.ProfileImageRepository
 import com.zerochat.network.lan.LanTransport
@@ -27,6 +28,7 @@ class ContactsViewModel @Inject constructor(
     private val lanTransport: LanTransport,
     private val peerRepository: PeerRepository,
     private val profileImageRepository: ProfileImageRepository,
+    private val messageRepository: MessageRepository,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ContactsUiState())
@@ -44,20 +46,10 @@ class ContactsViewModel @Inject constructor(
             try {
                 cryptoEngine.generateIdentity()
                 val fingerprint = cryptoEngine.getLocalFingerprint()
-                _uiState.update {
-                    it.copy(
-                        myId = "ZC:$fingerprint",
-                        isLoading = false,
-                    )
-                }
+                _uiState.update { it.copy(myId = "ZC:$fingerprint", isLoading = false) }
             } catch (e: Exception) {
                 Timber.e(e, "Failed to initialize identity")
-                _uiState.update {
-                    it.copy(
-                        myId = "ZC:${cryptoEngine.getLocalFingerprint()}",
-                        isLoading = false,
-                    )
-                }
+                _uiState.update { it.copy(myId = "ZC:${cryptoEngine.getLocalFingerprint()}", isLoading = false) }
             }
         }
     }
@@ -65,8 +57,7 @@ class ContactsViewModel @Inject constructor(
     private fun loadLocalIp() {
         viewModelScope.launch {
             val addresses = lanTransport.getLocalAddresses()
-            val ip = addresses.firstOrNull() ?: "Not connected"
-            _uiState.update { it.copy(myIp = ip) }
+            _uiState.update { it.copy(myIp = addresses.firstOrNull() ?: "Not connected") }
         }
     }
 
@@ -84,11 +75,23 @@ class ContactsViewModel @Inject constructor(
 
     private fun observeLocalProfile() {
         viewModelScope.launch {
-            val fingerprint = cryptoEngine.getLocalFingerprint()
-            profileImageRepository.getLocalProfile(fingerprint).collect { profile ->
-                _uiState.update {
-                    it.copy(myProfileImagePath = profile?.profileImagePath)
-                }
+            val fp = cryptoEngine.getLocalFingerprint()
+            profileImageRepository.getLocalProfile(fp).collect { profile ->
+                _uiState.update { it.copy(myProfileImagePath = profile?.profileImagePath) }
+            }
+        }
+    }
+
+    fun deletePeerAndMessages(fingerprint: String) {
+        viewModelScope.launch {
+            try {
+                // Delete all messages in this conversation
+                messageRepository.deleteConversation(fingerprint)
+                // Delete the peer from contacts
+                peerRepository.deletePeer(fingerprint)
+                Timber.i("Deleted peer and messages: $fingerprint")
+            } catch (e: Exception) {
+                Timber.e(e, "Failed to delete peer $fingerprint")
             }
         }
     }
