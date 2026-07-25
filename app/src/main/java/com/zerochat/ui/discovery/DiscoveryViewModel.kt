@@ -136,7 +136,8 @@ class DiscoveryViewModel @Inject constructor(
     }
 
     fun lookupPinCode(pin: String) {
-        if (pin.length != 8 || !pin.all { it.isDigit() }) {
+        val cleanPin = pin.filter { it.isDigit() }
+        if (cleanPin.length != 8) {
             _uiState.update { it.copy(error = "PIN must be exactly 8 digits") }
             return
         }
@@ -144,10 +145,10 @@ class DiscoveryViewModel @Inject constructor(
             _uiState.update { it.copy(isLookingUp = true, error = null, resolvedPeer = null) }
             try {
                 // 1. Try LAN (mDNS) first — fast, no internet needed
-                val lanPeer = lanTransport.resolvePinCode(pin)
+                val lanPeer = lanTransport.resolvePinCode(cleanPin)
                 if (lanPeer != null) {
                     _uiState.update {
-                        it.copy(isLookingUp = false, resolvedPeer = lanPeer, lookupPin = pin)
+                        it.copy(isLookingUp = false, resolvedPeer = lanPeer, lookupPin = cleanPin)
                     }
                     connectToPeer(lanPeer)
                     return@launch
@@ -157,7 +158,7 @@ class DiscoveryViewModel @Inject constructor(
                 Timber.i("PIN not found on LAN — trying WAN signaling")
                 _uiState.update { it.copy(isLookingUp = true, error = "Searching via internet...") }
 
-                wanSignalingManager.connectWithPin(pin)
+                wanSignalingManager.connectWithPin(cleanPin)
 
                 // Wait for connection result
                 wanSignalingManager.connectState
@@ -189,7 +190,7 @@ class DiscoveryViewModel @Inject constructor(
 
     fun updateLookupPin(pin: String) {
         _uiState.update {
-            it.copy(lookupPin = pin.take(8).filter { it.isDigit() }, resolvedPeer = null)
+            it.copy(lookupPin = pin.filter { it.isDigit() }.take(8), resolvedPeer = null)
         }
     }
 
