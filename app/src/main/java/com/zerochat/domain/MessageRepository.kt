@@ -47,8 +47,17 @@ interface MessageRepository {
     suspend fun markConversationRead(conversationId: String)
 
     /**
-     * Returns all messages that failed to send — used by a retry
-     * worker (future feature).
+     * Delete a single message by its id.
+     */
+    suspend fun deleteMessage(messageId: String)
+
+    /**
+     * Delete all messages in a conversation.
+     */
+    suspend fun deleteConversation(conversationId: String)
+
+    /**
+     * Returns all messages that failed to send.
      */
     suspend fun getFailedMessages(): List<Message>
 }
