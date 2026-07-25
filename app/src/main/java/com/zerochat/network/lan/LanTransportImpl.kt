@@ -349,7 +349,7 @@ class LanTransportImpl @Inject constructor(
                 activeSockets[key] = socket
 
                 serverScope.launch {
-                    readFromConnectedSocket(socket, key, ipAddress)
+                    readFromConnectedSocket(socket, key, ipAddress, remoteFp)
                 }
 
                 remoteFp
@@ -593,14 +593,15 @@ class LanTransportImpl @Inject constructor(
         socket: Socket,
         key: String,
         senderIp: String,
+        remoteFingerprint: String = senderIp,
     ) = withContext(Dispatchers.IO) {
         try {
             val input = socket.getInputStream()
 
             while (isActive && !socket.isClosed) {
                 val data = readFramedMessage(input) ?: break
-                _incomingData.send(LanIncoming(senderIp, data, senderIp))
-                Timber.d("← ${data.size}B from $senderIp")
+                _incomingData.send(LanIncoming(remoteFingerprint, data, senderIp))
+                Timber.d("← ${data.size}B from $remoteFingerprint")
             }
         } catch (_: SocketTimeoutException) {
             Timber.d("Idle timeout: $key")
